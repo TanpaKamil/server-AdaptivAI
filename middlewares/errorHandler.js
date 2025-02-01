@@ -2,16 +2,20 @@ class ErrorResponse extends Error {
     constructor(message, statusCode) {
         super(message);
         this.statusCode = statusCode;
+        this.name = this.constructor.name;
+        Error.captureStackTrace(this, this.constructor);
     }
 }
 
 const errorHandler = (err, req, res, next) => {
     let error = { ...err };
     error.message = err.message;
+    error.statusCode = err.statusCode || 500;
 
-    // Log error untuk development
+    // Log error for development
     console.log(err.stack);
 
+    // Handle specific error types
     switch (err.name) {
         case 'CastError':
             error.message = 'Resource not found';
@@ -41,7 +45,8 @@ const errorHandler = (err, req, res, next) => {
             break;
 
         default:
-            switch (err.statusCode) {
+            // Handle status code based errors
+            switch (error.statusCode) {
                 case 400:
                     error.message = error.message || 'Bad Request';
                     break;
@@ -63,9 +68,9 @@ const errorHandler = (err, req, res, next) => {
             }
     }
 
-    res.status(error.statusCode || 500).json({
+    res.status(error.statusCode).json({
         success: false,
-        error: error.message || 'Server Error'
+        error: error.message
     });
 };
 

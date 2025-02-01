@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const { errorHandler } = require('./middlewares/errorHandler.js');
+const { errorHandler, ErrorResponse } = require('./middlewares/errorHandler.js');
 const routes = require('./routes');
 
 const app = express();
@@ -15,18 +15,21 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.use('/api', routes);
 
-// Error Handler (harus diletakkan setelah routes)
-app.use(errorHandler);
-
-// Handle 404 - Route tidak ditemukan
+// Handle 404 - Route not found
 app.use((req, res, next) => {
     next(new ErrorResponse('Route not found', 404));
 });
 
+// Error Handler (must be after routes and 404 handler)
+app.use(errorHandler);
+
 // MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
     .then(() => console.log('Connected to MongoDB Atlas'))
-    .catch((error) => console.error('Error connecting to MongoDB:', error));
+    .catch((error) => {
+        console.error('Error connecting to MongoDB:', error);
+        process.exit(1);
+    });
 
 // Start server
 const PORT = process.env.PORT || 5000;

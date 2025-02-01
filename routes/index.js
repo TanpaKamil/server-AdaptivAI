@@ -2,23 +2,23 @@ const express = require('express');
 const router = express.Router();
 const { ErrorResponse } = require('../middlewares/errorHandler.js');
 
-// Contoh middleware untuk route spesifik
+// Middleware for handling async routes
 const asyncHandler = (fn) => (req, res, next) =>
     Promise.resolve(fn(req, res, next)).catch(next);
 
-// Contoh route dengan error handling
+// Modified route to use next(error) instead of throwing
 router.get('/test-error/:type', asyncHandler(async (req, res, next) => {
     switch (req.params.type) {
         case 'validation':
-            throw new ErrorResponse('Validation failed', 400);
+            return next(new ErrorResponse('Validation failed', 400));
         case 'unauthorized':
-            throw new ErrorResponse('Not authorized', 401);
+            return next(new ErrorResponse('Not authorized', 401));
         case 'forbidden':
-            throw new ErrorResponse('Forbidden access', 403);
+            return next(new ErrorResponse('Forbidden access', 403));
         case 'notfound':
-            throw new ErrorResponse('Resource not found', 404);
+            return next(new ErrorResponse('Resource not found', 404));
         case 'server':
-            throw new ErrorResponse('Internal server error', 500);
+            return next(new ErrorResponse('Internal server error', 500));
         default:
             res.json({ message: 'Test route working' });
     }
