@@ -1,80 +1,51 @@
-class ErrorResponse extends Error {
+class AppError extends Error {
     constructor(message, statusCode) {
-        super(message);
-        this.statusCode = statusCode;
-        this.name = this.constructor.name;
-        Error.captureStackTrace(this, this.constructor);
+      super(message);
+      this.statusCode = statusCode;
+      this.status = `${statusCode}`.startsWith('4') ? 'fail' : 'error';
+      this.isOperational = true;
+  
+      Error.captureStackTrace(this, this.constructor);
     }
-}
-
-const errorHandler = (err, req, res, next) => {
-    let error = { ...err };
-    error.message = err.message;
-    error.statusCode = err.statusCode || 500;
-
-    // Log error for development
-    console.log(err.stack);
-
-    // Handle specific error types
-    switch (err.name) {
-        case 'CastError':
-            error.message = 'Resource not found';
-            error.statusCode = 404;
-            break;
-
-        case 'ValidationError':
-            error.message = Object.values(err.errors).map(val => val.message);
-            error.statusCode = 400;
-            break;
-
-        case 'MongoServerError':
-            if (err.code === 11000) {
-                error.message = 'Duplicate field value entered';
-                error.statusCode = 400;
-            }
-            break;
-
-        case 'JsonWebTokenError':
-            error.message = 'Not authorized';
-            error.statusCode = 401;
-            break;
-
-        case 'TokenExpiredError':
-            error.message = 'Token expired';
-            error.statusCode = 401;
-            break;
-
-        default:
-            // Handle status code based errors
-            switch (error.statusCode) {
-                case 400:
-                    error.message = error.message || 'Bad Request';
-                    break;
-                case 401:
-                    error.message = error.message || 'Not authorized';
-                    break;
-                case 403:
-                    error.message = error.message || 'Forbidden';
-                    break;
-                case 404:
-                    error.message = error.message || 'Resource not found';
-                    break;
-                case 429:
-                    error.message = error.message || 'Too many requests';
-                    break;
-                default:
-                    error.statusCode = 500;
-                    error.message = error.message || 'Server Error';
-            }
+  }
+  
+  // Middleware untuk menangani async errors
+  const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+  };
+  
+  // Global error handling middleware
+  const errorHandler = (err, req, res, next) => {
+    err.statusCode = err.statusCode || 500;
+    err.status = err.status || 'error';
+  
+    if (process.env.NODE_ENV === 'development') {
+      res.status(err.statusCode).json({
+        status: err.status,
+        error: err,
+        message: err.message,
+        stack: err.stack
+      });
+    } else {
+      // Production error response
+      if (err.isOperational) {
+        res.status(err.statusCode).json({
+          status: err.status,
+          message: err.message
+        });
+      } else {
+        // Programming or unknown errors
+        console.error('ERROR 💥', err);
+        res.status(500).json({
+          status: 'error',
+          message: 'Something went wrong!'
+        });
+      }
     }
-
-    res.status(error.statusCode).json({
-        success: false,
-        error: error.message
-    });
-};
-
-module.exports = {
-    ErrorResponse,
+  };
+  
+  module.exports = {
+    AppError,
+    asyncHandler,
     errorHandler
-};
+  };
