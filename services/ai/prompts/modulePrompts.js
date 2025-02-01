@@ -1,6 +1,31 @@
-// src/services/ai/prompts/modulePrompts.js
+const JSON_FORMAT_RULES = `
+IMPORTANT: Follow these rules strictly when generating JSON responses:
+1. Escape all special characters in strings using proper JSON escaping:
+   - Use \\" for quotes
+   - Use \\n for newlines
+   - Use \\t for tabs
+   - Use \\r for carriage returns
+2. Avoid using any unescaped control characters in strings
+3. Ensure all string values are properly quoted
+4. Use valid JSON boolean values (true/false) not strings
+5. Use proper number format for numeric values
+6. Ensure all arrays and objects are properly closed
+7. Do not include any explanatory text outside the JSON structure
+8. Do not include any markdown or formatting within strings
+9. Ensure all property names are quoted
+10. Maximum string length for any single value: 1000 characters
 
-const LANGUAGE_PROMPT = `
+Example of properly formatted response:
+{
+  "title": "Sample Title",
+  "description": "This is a description\\nWith a new line",
+  "numeric_value": 42,
+  "is_valid": true,
+  "array_value": ["item1", "item2"]
+}
+`;
+
+const LANGUAGE_PROMPT = JSON_FORMAT_RULES + `
 I will provide you with a document. Before analyzing the content, I need you to:
 1. Detect the primary language of the document
 2. Based on user's preferred learning language (which I will provide), you should:
@@ -14,7 +39,7 @@ Return response in JSON format:
 }
 `;
 
-const CHAPTER_IDENTIFICATION_PROMPT = `
+const CHAPTER_IDENTIFICATION_PROMPT = JSON_FORMAT_RULES +  `
 Analyze the document content and structure carefully. For each identified chapter:
 1. Extract the main title
 2. Determine logical order
@@ -30,7 +55,7 @@ Return response in JSON format:
 }]
 `;
 
-const FLASHCARD_GENERATION_PROMPT = `
+const FLASHCARD_GENERATION_PROMPT =  JSON_FORMAT_RULES + `
 For the given chapter title and content, create comprehensive flashcards that:
 1. Cover all key concepts progressively
 2. Align with Bloom's Taxonomy levels (1-6)
@@ -52,13 +77,14 @@ Return response in JSON format:
 }]
 `;
 
-const ASSESSMENT_GENERATION_PROMPT = `
+const ASSESSMENT_GENERATION_PROMPT =  JSON_FORMAT_RULES + `
 Create a comprehensive assessment for the chapter that:
 1. Covers all identified key concepts
 2. Distributes questions across all Bloom's levels (1-6)
 3. Ensures clear, unambiguous questions
 4. Provides plausible distractors
 5. Includes detailed explanations
+6. In total, 10 Questions
 
 Questions should follow Bloom's Taxonomy:
 Level 1 (Remember): Recall of facts
@@ -78,7 +104,7 @@ Return response in JSON format:
 }]
 `;
 
-const EVALUATION_PROMPT = `
+const EVALUATION_PROMPT =  JSON_FORMAT_RULES + `
 Analyze the user's answers and performance to:
 1. Calculate comprehension score
 2. Determine mastery level
@@ -107,7 +133,7 @@ Return response in JSON format:
 }
 `;
 
-const ADAPTIVE_CONTENT_PROMPT = `
+const ADAPTIVE_CONTENT_PROMPT =  JSON_FORMAT_RULES + `
 Based on the evaluation results, generate adapted content that:
 1. Addresses identified knowledge gaps
 2. Reinforces weak areas
@@ -137,11 +163,28 @@ Return response in JSON format:
 }
 `;
 
+const MODULE_METADATA_PROMPT =  JSON_FORMAT_RULES + `
+Analyze this document and generate a suitable title and description for a learning module.
+
+Requirements:
+1. Title should be concise but descriptive (max 100 characters)
+2. Description should summarize the main learning objectives (max 250 characters)
+3. Excerpt should highlight key takeaways (max 150 characters)
+
+Return in JSON format:
+{
+  "title": "string",
+  "description": "string",
+  "excerpt": "string"
+}
+`;
+
 module.exports = {
-  LANGUAGE_PROMPT,
-  CHAPTER_IDENTIFICATION_PROMPT,
-  FLASHCARD_GENERATION_PROMPT,
-  ASSESSMENT_GENERATION_PROMPT,
-  EVALUATION_PROMPT,
-  ADAPTIVE_CONTENT_PROMPT
+    MODULE_METADATA_PROMPT,
+    LANGUAGE_PROMPT,
+    CHAPTER_IDENTIFICATION_PROMPT,
+    FLASHCARD_GENERATION_PROMPT,
+    ASSESSMENT_GENERATION_PROMPT,
+    EVALUATION_PROMPT,
+    ADAPTIVE_CONTENT_PROMPT
 };

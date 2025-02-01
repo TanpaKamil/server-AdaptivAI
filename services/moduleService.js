@@ -1,183 +1,529 @@
 // src/services/moduleService.js
-const { ModuleMaster, ModuleInstance } = require('../models/ModuleMaster');
+require('dotenv').config();
+const { ModuleMaster } = require('../models/ModuleMaster');
+const { ModuleInstance } = require('../models/ModuleInstance')
 const geminiConfig = require('../config/gemini');
 const { AppError } = require('../middlewares/errorHandler');
+const { processAIResponse } = require('../utils/aiResponseHelper');
+const fs = require('fs').promises;
+const mongoose = require('mongoose');
+const axios = require('axios');
+const { GoogleAICacheManager } = require('@google/generative-ai/server');
 const {
-  LANGUAGE_PROMPT,
-  CHAPTER_IDENTIFICATION_PROMPT,
-  FLASHCARD_GENERATION_PROMPT,
-  ASSESSMENT_GENERATION_PROMPT,
-  EVALUATION_PROMPT,
-  ADAPTIVE_CONTENT_PROMPT
+    MODULE_METADATA_PROMPT,
+    CHAPTER_IDENTIFICATION_PROMPT,
+    FLASHCARD_GENERATION_PROMPT,
+    ASSESSMENT_GENERATION_PROMPT,
+    EVALUATION_PROMPT,
+    ADAPTIVE_CONTENT_PROMPT
 } = require('./ai/prompts/modulePrompts');
+const { configDotenv } = require('dotenv');
+const cloudinary = require('cloudinary').v2;
 
 class ModuleService {
-  async createModule(pdfPath, userId, title, description, preferredLanguage) {
-    try {
-      // Upload PDF to Gemini
-      const file = await geminiConfig.uploadFile(pdfPath, 'application/pdf');
-      await geminiConfig.waitForFilesActive([file]);
-
-      // Start chat session
-      const chatSession = geminiConfig.startChat();
-      
-      // Check language and get confirmation
-      const languageResponse = await chatSession.sendMessage({
-        text: LANGUAGE_PROMPT,
-        context: { preferredLanguage }
-      });
-      
-      const languageCheck = JSON.parse(languageResponse.text());
-      if (!languageCheck.canProceed) {
-        throw new AppError('Document language processing failed', 400);
-      }
-
-      // Identify chapters with excerpts
-      const chaptersResponse = await chatSession.sendMessage({
-        text: CHAPTER_IDENTIFICATION_PROMPT
-      });
-      
-      const chapters = JSON.parse(chaptersResponse.text());
-      
-      // Create module with identified chapters
-      const module = await ModuleMaster.create({
-        title,
-        description,
-        createdBy: userId,
-        chapters: chapters.map(chapter => ({
-          title: chapter.title,
-          order: chapter.order,
-          excerpt: chapter.excerpt,
-          summaries: [],
-          levels: []
-        }))
-      });
-
-      return module;
-    } catch (error) {
-      console.error('Error creating module:', error);
-      throw new AppError('Failed to create module', 500);
+    constructor() {
+        this.cacheManager = new GoogleAICacheManager(process.env.GEMINI_API_KEY);
     }
-  }
 
-  async generateChapterContent(moduleId, chapterId, preferredLanguage) {
-    const module = await ModuleMaster.findById(moduleId);
-    if (!module) throw new AppError('Module not found', 404);
+    async createModule(pdfPath, userId, title, description, preferredLanguage, pdfUrl) {
+        let cache = null;
+        try {
+            // 1. First verify the PDF file exists and is not empty
+            const stats = await fs.stat(pdfPath);
+            if (stats.size === 0) {
+                throw new AppError('PDF file is empty', 400);
+            }
 
-    const chapter = module.chapters.id(chapterId);
-    if (!chapter) throw new AppError('Chapter not found', 404);
+            // 2. Read the file with proper error handling
+            const fileBuffer = await fs.readFile(pdfPath);
+            if (!fileBuffer || fileBuffer.length === 0) {
+                throw new AppError('Failed to read PDF file', 400);
+            }
 
-    const chatSession = geminiConfig.startChat();
+            // 3. Upload to Cloudinary first to ensure file is valid
+            const cloudinaryResult = await new Promise((resolve, reject) => {
+                cloudinary.uploader.upload(pdfPath, {
+                    resource_type: 'raw',
+                    folder: 'adaptive-learning',
+                    public_id: `module-${Date.now()}`,
+                    format: 'pdf',
+                    // Add validation
+                    invalidate: true,
+                    validation: {
+                        allowed_formats: ['pdf']
+                    }
+                }, (error, result) => {
+                    if (error) reject(new AppError(`Cloudinary upload failed: ${error.message}`, 500));
+                    resolve(result);
+                });
+            });
 
-    // Generate flashcards with comprehensive coverage
-    const flashcardsResponse = await chatSession.sendMessage({
-      text: FLASHCARD_GENERATION_PROMPT,
-      context: {
-        chapterTitle: chapter.title,
-        preferredLanguage
-      }
-    });
+            // 4. Verify Cloudinary upload was successful
+            if (!cloudinaryResult || !cloudinaryResult.secure_url) {
+                throw new AppError('Failed to upload PDF to storage', 500);
+            }
 
-    const flashcards = JSON.parse(flashcardsResponse.text());
-    chapter.summaries = flashcards;
+            // 5. Create base64 data for Gemini
+            const base64Data = fileBuffer.toString('base64');
+            const actualUserId = userId || new mongoose.Types.ObjectId();
 
-    // Generate initial assessment questions
-    const questionsResponse = await chatSession.sendMessage({
-      text: ASSESSMENT_GENERATION_PROMPT,
-      context: {
-        chapterTitle: chapter.title,
-        flashcards,
-        preferredLanguage
-      }
-    });
+            // 6. Create Gemini cache with validation
+            cache = await this.cacheManager.create({
+                model: 'models/gemini-1.5-flash-002',
+                displayName: `temp-module-${Date.now()}`,
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        inlineData: {
+                            mimeType: "application/pdf",
+                            data: base64Data
+                        }
+                    }]
+                }],
+                ttlSeconds: 3600
+            });
 
-    const questions = JSON.parse(questionsResponse.text());
-    
-    // Organize questions by Bloom's level
-    const questionsByLevel = questions.reduce((acc, q) => {
-      if (!acc[q.bloomLevel]) acc[q.bloomLevel] = [];
-      acc[q.bloomLevel].push(q);
-      return acc;
-    }, {});
+            // 7. Verify cache creation
+            if (!cache || !cache.name) {
+                throw new AppError('Failed to create AI cache', 500);
+            }
 
-    chapter.levels = Object.entries(questionsByLevel).map(([level, questions]) => ({
-      bloomLevel: parseInt(level),
-      questions
-    }));
+            // 8. Get AI model
+            const model = geminiConfig.genAI.getGenerativeModelFromCachedContent(cache);
 
-    await module.save();
-    return chapter;
-  }
+            // 9. Generate metadata and chapters with error handling
+            const [metadataResult, chapterResult] = await Promise.all([
+                model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [{
+                            text: `Language: ${preferredLanguage}\n${MODULE_METADATA_PROMPT}`
+                        }]
+                    }]
+                }).catch(error => {
+                    throw new AppError(`Metadata generation failed: ${error.message}`, 500);
+                }),
+                model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [{
+                            text: `Language: ${preferredLanguage}\n${CHAPTER_IDENTIFICATION_PROMPT}`
+                        }]
+                    }]
+                }).catch(error => {
+                    throw new AppError(`Chapter identification failed: ${error.message}`, 500);
+                })
+            ]);
 
-  async evaluateAndAdapt(moduleInstanceId, answers, preferredLanguage) {
-    const instance = await ModuleInstance.findById(moduleInstanceId)
-      .populate('moduleMasterId');
-    
-    if (!instance) throw new AppError('Module instance not found', 404);
+            // 10. Process AI responses
+            const metadata = processAIResponse(metadataResult.response.text(), 'metadata');
+            const chapters = processAIResponse(chapterResult.response.text(), 'chapters');
 
-    const chatSession = geminiConfig.startChat();
+            // 11. Prepare module data
+            const moduleData = {
+                title: title || metadata.title,
+                description: description || metadata.description,
+                excerpt: chapters[0]?.excerpt || metadata.excerpt,
+                createdBy: actualUserId,
+                pdfUrl: cloudinaryResult.secure_url, // Use the verified Cloudinary URL
+                chapters: chapters.map(chapter => ({
+                    title: chapter.title,
+                    order: chapter.order,
+                    excerpt: chapter.excerpt,
+                    summaries: [],
+                    levels: []
+                })),
+                subscribedUsers: [actualUserId],
+                metadata: {
+                    caches: [{
+                        userId: actualUserId,
+                        cacheName: cache.name,
+                        expiresAt: new Date(Date.now() + 3600000)
+                    }]
+                }
+            };
 
-    // Evaluate comprehension and determine adaptation needs
-    const evalResponse = await chatSession.sendMessage({
-      text: EVALUATION_PROMPT,
-      context: {
-        currentLevel: instance.currentState.lastAssessmentLevel,
-        questionCount: answers.length,
-        correctCount: answers.filter(a => a.isCorrect).length,
-        answers,
-        preferredLanguage
-      }
-    });
+            // 12. Create module in database
+            const createdModule = await ModuleMaster.create(moduleData);
 
-    const evaluation = JSON.parse(evalResponse.text());
+            // 13. Clean up temporary file
+            await fs.unlink(pdfPath).catch(console.error);
 
-    // Update instance with evaluation results
-    instance.currentState.comprehensionScore = evaluation.score;
-    instance.currentState.lastAssessmentLevel = evaluation.recommendedLevel;
+            return createdModule;
 
-    if (evaluation.needsAdaptation) {
-      // Generate adapted content based on evaluation
-      const adaptiveResponse = await chatSession.sendMessage({
-        text: ADAPTIVE_CONTENT_PROMPT,
-        context: {
-          targetLevel: evaluation.recommendedLevel,
-          focusAreas: evaluation.adaptationStrategy.focusAreas,
-          weakConcepts: evaluation.weakAreas,
-          preferredLanguage
+        } catch (error) {
+            // Clean up on error
+            if (cache?.name) {
+                await this.cacheManager.delete(cache.name).catch(console.error);
+            }
+            // Clean up temporary file even if there's an error
+            await fs.unlink(pdfPath).catch(console.error);
+
+            throw new AppError(`Failed to create module: ${error.message}`, error.statusCode || 500);
         }
-      });
-
-      const adaptiveContent = JSON.parse(adaptiveResponse.text());
-      
-      // Update module master with new content
-      const chapter = instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex];
-      
-      // Add new questions to appropriate level
-      const level = chapter.levels.find(l => l.bloomLevel === evaluation.recommendedLevel);
-      level.questions.push(...adaptiveContent.questions);
-      
-      // Add new flashcards if provided
-      if (adaptiveContent.newFlashcards?.length > 0) {
-        chapter.summaries.push(...adaptiveContent.newFlashcards);
-      }
-      
-      await instance.moduleMasterId.save();
-      
-      // Record adaptation history
-      instance.adaptiveHistory.push({
-        previousLevel: instance.currentState.lastAssessmentLevel,
-        newLevel: evaluation.recommendedLevel,
-        assessmentScore: evaluation.score,
-        generatedQuestions: adaptiveContent.questions.map(q => q._id)
-      });
     }
 
-    await instance.save();
-    return {
-      evaluation,
-      instance
-    };
-  }
+    // In generateChapterContent method of moduleService.js
+    async generateChapterContent(moduleId, chapterId, userId, preferredLanguage) {
+        try {
+            const module = await ModuleMaster.findById(moduleId);
+            if (!module) throw new AppError('Module not found', 404);
+
+            const chapter = module.chapters.id(chapterId);
+            if (!chapter) throw new AppError('Chapter not found', 404);
+
+            // Check for existing cache
+            const userCache = module.metadata.caches.find(c =>
+                c.userId.toString() === userId.toString() &&
+                new Date(c.expiresAt) > new Date()
+            );
+
+            if (!userCache) {
+                throw new AppError('PDF context expired or not found. Please reload the module.', 400);
+            }
+
+            // Get model with cached content - Add model name here
+            const model = geminiConfig.genAI.getGenerativeModelFromCachedContent({
+                model: "gemini-1.5-flash-002",  // Add this line
+                name: userCache.cacheName
+            });
+
+            // Generate flashcards
+            const flashcardsResult = await model.generateContent({
+                contents: [{
+                    role: 'user',
+                    parts: [{ text: `${FLASHCARD_GENERATION_PROMPT}\nChapter: ${chapter.title}\nLanguage: ${preferredLanguage}` }]
+                }]
+            });
+
+            const flashcards = processAIResponse(flashcardsResult.response.text(), 'flashcards');
+            chapter.summaries = flashcards;
+
+            // Generate assessment questions
+            const questionsResult = await model.generateContent({
+                contents: [{
+                    role: 'user',
+                    parts: [{ text: `${ASSESSMENT_GENERATION_PROMPT}\nChapter: ${chapter.title}\nLanguage: ${preferredLanguage}` }]
+                }]
+            });
+
+            const questions = processAIResponse(questionsResult.response.text(), 'questions');
+
+            // Group questions by Bloom's level
+            const questionsByLevel = questions.reduce((acc, q) => {
+                if (!acc[q.bloomLevel]) acc[q.bloomLevel] = [];
+                acc[q.bloomLevel].push(q);
+                return acc;
+            }, {});
+
+            chapter.levels = Object.entries(questionsByLevel).map(([level, questions]) => ({
+                bloomLevel: parseInt(level),
+                questions
+            }));
+
+            await module.save();
+            return chapter;
+
+        } catch (error) {
+            console.error('Error generating chapter content:', error);
+            throw new AppError('Failed to generate chapter content: ' + error.message, 500);
+        }
+    }
+
+    async evaluateAndAdapt(moduleInstanceId, answers, preferredLanguage) {
+        try {
+            const instance = await ModuleInstance.findById(moduleInstanceId)
+                .populate({
+                    path: 'moduleMasterId',
+                    populate: { path: 'metadata.caches' }
+                });
+    
+            if (!instance) throw new AppError('Module instance not found', 404);
+    
+            // Get latest valid cache
+            let latestCache = instance.moduleMasterId.metadata?.caches
+                ?.find(c => new Date(c.expiresAt) > new Date());
+    
+            if (!latestCache && instance.moduleMasterId.pdfUrl) {
+                console.log('Cache expired or not found, attempting to refresh...');
+                const newCache = await this.refreshCache(
+                    instance.moduleMasterId._id,
+                    instance.userId,
+                    instance.moduleMasterId.pdfUrl
+                );
+                latestCache = {
+                    cacheName: newCache.name,
+                    userId: instance.userId,
+                    expiresAt: new Date(Date.now() + 3600000)
+                };
+            }
+    
+            if (!latestCache) {
+                throw new AppError('Could not access or refresh PDF content', 400);
+            }
+    
+            // Get model with cached content
+            const model = geminiConfig.genAI.getGenerativeModelFromCachedContent({
+                model: "gemini-1.5-flash-002",
+                name: latestCache.cacheName
+            });
+    
+            // First evaluate performance
+            const evalResult = await model.generateContent({
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        text: `Using the PDF content as context for this evaluation.\n\n${EVALUATION_PROMPT
+                            .replace('{currentLevel}', instance.currentState.lastAssessmentLevel)
+                            .replace('{questionCount}', answers.length)
+                            .replace('{correctCount}', answers.filter(a => a.isCorrect).length)
+                            }\n\nDetailed Answers: ${JSON.stringify(answers)}\nPreferred Language: ${preferredLanguage}`
+                    }]
+                }]
+            });
+    
+            const evaluation = processAIResponse(evalResult.response.text(), 'evaluation');
+            
+            let newQuestions = [];
+            let newFlashcards = [];
+    
+            if (evaluation.needsAdaptation) {
+                // Generate adaptive content using cached context
+                const adaptiveResult = await model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [{
+                            text: `Using the PDF content as context.\n\n${ADAPTIVE_CONTENT_PROMPT
+                                .replace('{targetLevel}', evaluation.recommendedLevel)
+                                .replace('{focusAreas}', JSON.stringify(evaluation.adaptationStrategy.focusAreas))
+                                .replace('{weakConcepts}', JSON.stringify(evaluation.weakAreas))
+                                }\nPreferred Language: ${preferredLanguage}\n\nCurrent Chapter: ${instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex].title}`
+                        }]
+                    }]
+                });
+    
+                const adaptiveContent = processAIResponse(adaptiveResult.response.text(), 'questions');
+    
+                if (adaptiveContent.questions?.length > 0) {
+                    // Update ModuleMaster with new questions
+                    await ModuleMaster.findOneAndUpdate(
+                        {
+                            _id: instance.moduleMasterId._id,
+                            'chapters.order': instance.currentState.currentChapterIndex
+                        },
+                        {
+                            $push: {
+                                'chapters.$.levels': {
+                                    bloomLevel: evaluation.recommendedLevel,
+                                    questions: adaptiveContent.questions
+                                }
+                            }
+                        }
+                    );
+                    newQuestions = adaptiveContent.questions;
+                }
+    
+                if (adaptiveContent.newFlashcards?.length > 0) {
+                    // Update ModuleMaster with new flashcards
+                    await ModuleMaster.findOneAndUpdate(
+                        {
+                            _id: instance.moduleMasterId._id,
+                            'chapters.order': instance.currentState.currentChapterIndex
+                        },
+                        {
+                            $push: {
+                                'chapters.$.summaries': {
+                                    $each: adaptiveContent.newFlashcards
+                                }
+                            }
+                        }
+                    );
+                    newFlashcards = adaptiveContent.newFlashcards;
+                }
+            }
+    
+            // Update instance state and adaptive history
+            await ModuleInstance.findOneAndUpdate(
+                { _id: moduleInstanceId },
+                {
+                    $set: {
+                        'currentState.comprehensionScore': evaluation.score,
+                        'currentState.lastAssessmentLevel': evaluation.recommendedLevel
+                    },
+                    $push: {
+                        adaptiveHistory: {
+                            previousLevel: instance.currentState.lastAssessmentLevel,
+                            newLevel: evaluation.recommendedLevel,
+                            assessmentScore: evaluation.score,
+                            generatedQuestions: newQuestions.map(q => q._id),
+                            generatedFlashcards: newFlashcards.map(f => f._id),
+                            understandingAnalysis: {
+                                strengths: evaluation.strengths || [],
+                                weakAreas: evaluation.weakAreas || []
+                            },
+                            adaptationStrategy: evaluation.adaptationStrategy || {},
+                            timestamp: new Date()
+                        }
+                    }
+                }
+            );
+    
+            return {
+                evaluation: {
+                    ...evaluation,
+                    newContent: {
+                        questions: newQuestions,
+                        flashcards: newFlashcards
+                    }
+                },
+                instanceState: {
+                    currentLevel: evaluation.recommendedLevel,
+                    comprehensionScore: evaluation.score,
+                    needsAdaptation: evaluation.needsAdaptation
+                }
+            };
+    
+        } catch (error) {
+            console.error('Error in evaluation and adaptation:', error);
+            throw new AppError('Failed to evaluate and adapt: ' + error.message, 500);
+        }
+    }
+
+    async getNextQuestions(instanceId, count = 5) {
+        try {
+            const instance = await ModuleInstance.findById(instanceId)
+                .populate('moduleMasterId');
+
+            if (!instance) throw new AppError('Module instance not found', 404);
+
+            const currentChapter = instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex];
+            const currentLevel = currentChapter.levels.find(
+                l => l.bloomLevel === instance.currentState.lastAssessmentLevel
+            );
+
+            if (!currentLevel) {
+                throw new AppError('No questions available for current level', 404);
+            }
+
+            // Get questions that haven't been attempted yet
+            const attemptedQuestionIds = instance.progress.currentQuestions.map(q => q.questionId.toString());
+            const availableQuestions = currentLevel.questions.filter(
+                q => !attemptedQuestionIds.includes(q._id.toString())
+            );
+
+            // Select next batch of questions
+            const nextQuestions = availableQuestions.slice(0, count);
+
+            if (nextQuestions.length === 0) {
+                throw new AppError('No more questions available at this level', 404);
+            }
+
+            return {
+                questions: nextQuestions,
+                currentLevel: instance.currentState.lastAssessmentLevel,
+                progress: {
+                    completedQuestions: attemptedQuestionIds.length,
+                    totalQuestions: currentLevel.questions.length
+                }
+            };
+        } catch (error) {
+            console.error('Error getting next questions:', error);
+            throw new AppError('Failed to get next questions: ' + error.message, 500);
+        }
+    }
+
+    async refreshCache(moduleId, userId, pdfUrl) {
+        let cache = null;
+        try {
+            console.log('Refreshing cache for module:', moduleId);
+    
+            // Parse the Cloudinary URL components
+            const urlParts = pdfUrl.split('/');
+            const version = urlParts.find(part => part.startsWith('v')); // e.g., 'v1738425310'
+            const folder = 'adaptive-learning';
+            const filename = urlParts[urlParts.length - 1]; // Gets the full filename with extension
+            const publicId = `${folder}/${filename.replace('.pdf', '')}`; // Includes folder in public_id
+    
+            // Generate authentication parameters
+            const timestamp = Math.round(new Date().getTime() / 1000);
+    
+            // Parameters for signing
+            const params = {
+                timestamp: timestamp,
+                public_id: publicId,
+                resource_type: 'raw',
+                type: 'upload',
+                version: version?.replace('v', '') // Remove 'v' prefix if present
+            };
+    
+            // Generate signature
+            const signature = cloudinary.utils.api_sign_request(
+                params,
+                process.env.CLOUDINARY_API_SECRET
+            );
+    
+            // Construct secure download URL with all components
+            const downloadUrl = cloudinary.url(publicId, {
+                resource_type: 'raw',
+                type: 'upload',
+                version: version?.replace('v', ''),
+                timestamp: timestamp,
+                signature: signature,
+                secure: true,
+                format: 'pdf'
+            });
+    
+            console.log('Constructed download URL:', downloadUrl);
+    
+            // Fetch the PDF
+            const response = await axios.get(downloadUrl, {
+                responseType: 'arraybuffer',
+                headers: {
+                    'Accept': 'application/pdf'
+                }
+            });
+    
+            // Convert to base64
+            const base64Data = Buffer.from(response.data).toString('base64');
+    
+            // Create cache with Gemini
+            cache = await this.cacheManager.create({
+                model: 'models/gemini-1.5-flash-002',
+                displayName: `temp-module-${Date.now()}`,
+                contents: [{
+                    role: 'user',
+                    parts: [{
+                        inlineData: {
+                            mimeType: "application/pdf",
+                            data: base64Data
+                        }
+                    }]
+                }],
+                ttlSeconds: 3600
+            });
+    
+            // Update module with new cache info
+            const updatedModule = await ModuleMaster.findByIdAndUpdate(moduleId, {
+                $push: {
+                    'metadata.caches': {
+                        userId,
+                        cacheName: cache.name,
+                        expiresAt: new Date(Date.now() + 3600000)
+                    }
+                }
+            }, { new: true });
+    
+            console.log('Cache refreshed successfully:', cache.name);
+            return cache;
+    
+        } catch (error) {
+            console.error('Error refreshing cache:', error);
+            if (cache?.name) {
+                await this.cacheManager.delete(cache.name).catch(console.error);
+            }
+            throw new AppError(`Failed to refresh cache: ${error.message}`, 500);
+        }
+    }
 }
 
 module.exports = new ModuleService();

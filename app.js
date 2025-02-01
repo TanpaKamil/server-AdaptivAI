@@ -4,9 +4,9 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
-const { errorHandler, ErrorResponse } = require('./middlewares/errorHandler.js');
+const fs = require('fs');
+const { errorHandler, AppError } = require('./middlewares/errorHandler');
 const routes = require('./routes');
-const fs = require('fs')
 
 const app = express();
 
@@ -17,7 +17,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadsDir)) {
+if (!fs.existsSync(uploadsDir)){
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
@@ -30,7 +30,7 @@ app.get('/health', (req, res) => {
     });
 });
 
-// API Documentation (optional but helpful for testing)
+// API Documentation
 app.get('/api-docs', (req, res) => {
     res.json({
         version: '1.0.0',
@@ -57,7 +57,7 @@ app.use('/api', routes);
 
 // Handle 404 - Route not found
 app.use((req, res, next) => {
-    next(new ErrorResponse('Route not found', 404));
+    next(new AppError('Route not found', 404));
 });
 
 // Error Handler

@@ -1,3 +1,4 @@
+// src/models/ModuleMaster.js
 const mongoose = require('mongoose');
 
 const userAttemptSchema = new mongoose.Schema({
@@ -81,8 +82,34 @@ const chapterSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    excerpt: {
+        type: String,
+        required: true
+    },
     summaries: [summarySchema],
     levels: [levelSchema]
+});
+
+const cacheSchema = new mongoose.Schema({
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true
+    },
+    cacheName: {
+        type: String,
+        required: true
+    },
+    expiresAt: {
+        type: Date,
+        required: true
+    }
+});
+
+const metadataSchema = new mongoose.Schema({
+    caches: {
+        type: [cacheSchema],
+        default: []
+    }
 });
 
 const ModuleMasterSchema = new mongoose.Schema({
@@ -112,6 +139,16 @@ const ModuleMasterSchema = new mongoose.Schema({
     isRecommended: {
         type: Boolean,
         default: false
+    },
+    metadata: {
+        type: metadataSchema,
+        default: () => ({
+            caches: []
+        })
+    },
+    pdfUrl: {
+        type: String,
+        required: true
     }
 }, {
     timestamps: true
@@ -122,5 +159,5 @@ ModuleMasterSchema.index({ createdAt: -1 });
 ModuleMasterSchema.index({ isRecommended: 1 });
 
 module.exports = {
-    ModuleMaster: mongoose.model('ModuleMaster', ModuleMasterSchema),
+    ModuleMaster: mongoose.model('ModuleMaster', ModuleMasterSchema)
 };
