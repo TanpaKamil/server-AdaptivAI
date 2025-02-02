@@ -19,37 +19,150 @@ const userAttemptSchema = new mongoose.Schema({
 const questionSchema = new mongoose.Schema({
     question: {
         type: String,
-        required: true
+        required: [true, 'Question text is required']
     },
-    options: [{
-        type: String,
-        required: true
-    }],
+    options: {
+        type: [{
+            type: String,
+            required: [true, 'Option text is required']
+        }],
+        validate: {
+            validator: function (arr) {
+                return arr.length === 4;  // Must have exactly 4 options
+            },
+            message: 'Questions must have exactly 4 options'
+        },
+        required: [true, 'Options are required']
+    },
     correctAnswer: {
         type: Number,
-        required: true
+        required: [true, 'Correct answer index is required'],
+        min: [0, 'Correct answer index must be between 0 and 3'],
+        max: [3, 'Correct answer index must be between 0 and 3']
     },
     explanation: {
         type: String,
-        required: true
+        required: [true, 'Explanation is required']
     },
     bloomLevel: {
         type: Number,
-        required: true,
-        min: 1,
-        max: 6
+        required: [true, 'Bloom\'s taxonomy level is required'],
+        min: [1, 'Bloom\'s level must be between 1 and 6'],
+        max: [6, 'Bloom\'s level must be between 1 and 6'],
+        validate: {
+            validator: Number.isInteger,
+            message: '{VALUE} is not an integer value for Bloom\'s level'
+        }
     },
-    usersAttempted: [userAttemptSchema]
+    difficultyLevel: {
+        type: Number,
+        required: [true, 'Difficulty level is required'],
+        min: [1, 'Difficulty level must be between 1 and 5'],
+        max: [5, 'Difficulty level must be between 1 and 5'],
+        validate: {
+            validator: Number.isInteger,
+            message: '{VALUE} is not an integer value for difficulty level'
+        }
+    },
+    learningObjective: {
+        type: String,
+        required: [true, 'Learning objective is required']
+    },
+    targetedConcept: {
+        type: String,
+        required: [true, 'Targeted concept is required']
+    },
+    metadata: {
+        timeToAnswer: Number,  // in seconds
+        averageScore: {
+            type: Number,
+            min: 0,
+            max: 100
+        },
+        lastUpdated: {
+            type: Date,
+            default: Date.now
+        }
+    }
+}, {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
 });
 
-const levelSchema = new mongoose.Schema({
-    bloomLevel: {
+// Add index for common queries
+questionSchema.index({ bloomLevel: 1, difficultyLevel: 1 });
+
+// Virtual for calculating success rate
+questionSchema.virtual('successRate').get(function () {
+    if (!this.metadata || typeof this.metadata.averageScore !== 'number') {
+        return null;
+    }
+    return this.metadata.averageScore / 100;
+});
+
+// Method to validate question completeness
+questionSchema.methods.isComplete = function () {
+    return this.question &&
+        this.options &&
+        this.options.length === 4 &&
+        typeof this.correctAnswer === 'number' &&
+        this.bloomLevel &&
+        this.difficultyLevel;
+};
+
+// Method to validate if question is ready for student
+questionSchema.methods.isReadyForStudent = function () {
+    return this.isComplete() &&
+        this.explanation &&
+        this.learningObjective &&
+        this.targetedConcept;
+};
+
+module.exports = questionSchema;
+
+const questionSetSchema = new mongoose.Schema({
+    setNumber: {
         type: Number,
-        required: true,
-        min: 1,
-        max: 6
+        required: true
     },
-    questions: [questionSchema]
+    type: {
+        type: String,
+        enum: ['initial', 'adaptive'],
+        required: true
+    },
+    questionRefs: [{
+        questionId: {
+            type: mongoose.Schema.Types.ObjectId,
+            required: true
+        },
+        bloomLevel: {
+            type: Number,
+            required: true,
+            min: 1,
+            max: 6
+        },
+        targetedConcept: String
+    }],
+    bloomLevelDistribution: {
+        level1: Number,
+        level2: Number,
+        level3: Number,
+        level4: Number,
+        level5: Number,
+        level6: Number
+    },
+    adaptationMetadata: {  // Only for adaptive sets
+        targetedWeakAreas: [String],
+        learningProgression: String,
+        recommendedStudyOrder: [String],
+        previousSetScore: Number,
+        adaptationReason: String
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now
+    }
 });
 
 const summarySchema = new mongoose.Schema({
@@ -70,6 +183,13 @@ const summarySchema = new mongoose.Schema({
     flashcardBack: {
         type: String,
         required: true
+    },
+    relatedConcepts: [String],  // New field
+    practicePrompt: String,     // New field
+    adaptiveFor: {              // New field
+        weakArea: String,
+        bloomLevel: Number,
+        generatedAt: Date
     }
 });
 
@@ -87,29 +207,16 @@ const chapterSchema = new mongoose.Schema({
         required: true
     },
     summaries: [summarySchema],
-    levels: [levelSchema]
-});
-
-const cacheSchema = new mongoose.Schema({
-    userId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true
-    },
-    cacheName: {
-        type: String,
-        required: true
-    },
-    expiresAt: {
-        type: Date,
-        required: true
-    }
-});
-
-const metadataSchema = new mongoose.Schema({
-    caches: {
-        type: [cacheSchema],
-        default: []
-    }
+    levels: [{
+        bloomLevel: {
+            type: Number,
+            required: true,
+            min: 1,
+            max: 6
+        },
+        questions: [questionSchema]
+    }],
+    questionSets: [questionSetSchema]  // New field
 });
 
 const ModuleMasterSchema = new mongoose.Schema({
@@ -135,101 +242,22 @@ const ModuleMasterSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    chapters: [{
-        title: {
-            type: String,
-            required: true
-        },
-        order: {
-            type: Number,
-            required: true
-        },
-        excerpt: {
-            type: String,
-            required: true
-        },
-        summaries: [{
-            content: {
-                type: String,
-                required: true
-            },
-            comprehensionLevel: {
-                type: Number,
-                required: true,
-                min: 1,
-                max: 6
-            },
-            flashcardFront: {
-                type: String,
-                required: true
-            },
-            flashcardBack: {
-                type: String,
-                required: true
-            }
-        }],
-        levels: [{
-            bloomLevel: {
-                type: Number,
-                required: true,
-                min: 1,
-                max: 6
-            },
-            questions: [{
-                question: {
-                    type: String,
-                    required: true
-                },
-                options: [{
-                    type: String,
-                    required: true
-                }],
-                correctAnswer: {
-                    type: Number,
-                    required: true
-                },
-                bloomLevel: {
-                    type: Number,
-                    required: true,
-                    min: 1,
-                    max: 6
-                },
-                usersAttempted: [{
-                    userId: {
-                        type: mongoose.Schema.Types.ObjectId,
-                        required: true
-                    },
-                    isCorrect: {
-                        type: Boolean,
-                        required: true
-                    },
-                    attemptedAt: {
-                        type: Date,
-                        default: Date.now
-                    }
-                }]
-            }]
-        }]
-    }],
+    chapters: [chapterSchema],
     subscribedUsers: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
     metadata: {
-        caches: [{
-            userId: {
-                type: mongoose.Schema.Types.ObjectId,
-                required: true
-            },
-            cacheName: {
-                type: String,
-                required: true
-            },
-            expiresAt: {
-                type: Date,
-                required: true
-            }
-        }]
+        difficultyLevel: {
+            type: Number,
+            min: 1,
+            max: 5,
+            default: 3
+        },
+        recommendedPrerequisites: [String],
+        learningObjectives: [String],
+        estimatedDuration: Number,  // in minutes
+        lastUpdated: Date
     }
 }, {
     timestamps: true
@@ -238,6 +266,7 @@ const ModuleMasterSchema = new mongoose.Schema({
 // Indexes
 ModuleMasterSchema.index({ createdAt: -1 });
 ModuleMasterSchema.index({ isRecommended: 1 });
+ModuleMasterSchema.index({ 'chapters.questionSets.setNumber': 1 });
 
 module.exports = {
     ModuleMaster: mongoose.model('ModuleMaster', ModuleMasterSchema)

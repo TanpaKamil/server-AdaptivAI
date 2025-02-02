@@ -6,10 +6,9 @@ const { AppError } = require('../middlewares/errorHandler');
 const { ModuleMaster } = require('../models/ModuleMaster');
 const { ModuleInstance } = require('../models/ModuleInstance');
 const mongoose = require('mongoose');
-const fs = require('fs').promises;
 
 class ModuleController {
-
+  // Create a new module
   async createModule(req, res) {
     const { title, description, preferredLanguage = 'id' } = req.body;
     let cloudinaryResult = null;
@@ -25,8 +24,6 @@ class ModuleController {
     }
 
     try {
-      const tempUserId = new mongoose.Types.ObjectId();
-
       // Upload to Cloudinary first
       try {
         cloudinaryResult = await uploadToCloudinary(req.file.path);
@@ -38,7 +35,8 @@ class ModuleController {
         throw new AppError('Failed to upload file: ' + cloudinaryError.message, 500);
       }
 
-      // Create module with the cloudinary URL
+      // Create module
+      const tempUserId = new mongoose.Types.ObjectId();
       const module = await moduleService.createModule(
         req.file.path,
         tempUserId,
@@ -48,15 +46,9 @@ class ModuleController {
         cloudinaryResult.secure_url
       );
 
-      // Cleanup local file
-      await cleanupFile(req.file.path);
-
-      // Return response with module data only
       res.status(201).json({
         status: 'success',
-        data: {
-          module
-        }
+        data: { module }
       });
 
     } catch (error) {
@@ -64,7 +56,7 @@ class ModuleController {
       await cleanupFile(req.file.path);
 
       // Cleanup Cloudinary if upload succeeded but module creation failed
-      if (cloudinaryResult && cloudinaryResult.public_id) {
+      if (cloudinaryResult?.public_id) {
         try {
           await cloudinary.uploader.destroy(cloudinaryResult.public_id, { resource_type: 'raw' });
         } catch (cleanupError) {
@@ -77,23 +69,21 @@ class ModuleController {
         error.statusCode || 500
       );
     }
-  };
+  }
 
-  // Get all modules
+  // Get all modules with basic info
   async getAllModules(req, res) {
     const modules = await ModuleMaster.find()
-      .select('title description excerpt chapters.title isRecommended')
+      .select('title description excerpt chapters.title metadata.difficultyLevel isRecommended')
       .sort('-createdAt');
 
     res.status(200).json({
       status: 'success',
-      data: {
-        modules
-      }
+      data: { modules }
     });
-  };
+  }
 
-  // Get specific module
+  // Get specific module with full details
   async getModuleById(req, res) {
     const module = await ModuleMaster.findById(req.params.moduleId);
 
@@ -103,46 +93,28 @@ class ModuleController {
 
     res.status(200).json({
       status: 'success',
-      data: {
-        module
-      }
+      data: { module }
     });
-  };
+  }
 
   // Generate content for a chapter
   async generateChapterContent(req, res) {
     const { moduleId, chapterId } = req.params;
     const { preferredLanguage = 'id' } = req.body;
-
-    // Ambil module dulu untuk mendapatkan userId dari metadata.caches
-    const module = await ModuleMaster.findById(moduleId);
-    if (!module) {
-      throw new AppError('Module not found', 404);
-    }
-
-    // Ambil cache terbaru
-    const latestCache = module.metadata?.caches?.sort((a, b) =>
-      new Date(b.expiresAt) - new Date(a.expiresAt)
-    )[0];
-
-    if (!latestCache) {
-      throw new AppError('No valid cache found for this module', 400);
-    }
+    const tempUserId = new mongoose.Types.ObjectId();
 
     const chapter = await moduleService.generateChapterContent(
       moduleId,
       chapterId,
-      latestCache.userId, // Gunakan userId dari cache
+      tempUserId,
       preferredLanguage
     );
 
     res.status(200).json({
       status: 'success',
-      data: {
-        chapter
-      }
+      data: { chapter }
     });
-  };
+  }
 
   // Get chapter content
   async getChapterContent(req, res) {
@@ -160,232 +132,145 @@ class ModuleController {
 
     res.status(200).json({
       status: 'success',
-      data: {
-        chapter
-      }
+      data: { chapter }
     });
-  };
+  }
 
+  // Start a new module instance
   async startModuleInstance(req, res) {
     const tempUserId = new mongoose.Types.ObjectId();
     const { moduleId } = req.params;
 
-    // Get module master
-    const module = await ModuleMaster.findById(moduleId);
-    if (!module) {
-      throw new AppError('Module not found', 404);
-    }
-
-    // Get initial chapter
-    const initialChapter = module.chapters[0];
-    if (!initialChapter) {
-      throw new AppError('Chapter not found', 404);
-    }
-
-    // Initialize initial questions with metadata
-    const initialQuestions = [];
-
-    // Get 2 questions each from levels 1-4
-    for (let level = 1; level <= 4; level++) {
-      const levelQuestions = initialChapter.levels
-        .find(l => l.bloomLevel === level)?.questions || [];
-
-      const selected = levelQuestions
-        .slice(0, 2)
-        .map(q => ({
-          questionId: q._id,
-          status: 'pending',
-          bloomLevel: level,
-          attemptNumber: 1
-        }));
-
-      initialQuestions.push(...selected);
-    }
-
-    // Get 1 question each from levels 5-6
-    for (let level = 5; level <= 6; level++) {
-      const levelQuestions = initialChapter.levels
-        .find(l => l.bloomLevel === level)?.questions || [];
-
-      const selected = levelQuestions
-        .slice(0, 1)
-        .map(q => ({
-          questionId: q._id,
-          status: 'pending',
-          bloomLevel: level,
-          attemptNumber: 1
-        }));
-
-      initialQuestions.push(...selected);
-    }
-
-    // Create new instance with initial questions
-    const instance = await ModuleInstance.create({
-      moduleMasterId: moduleId,
-      userId: tempUserId,
-      currentState: {
-        currentChapterIndex: 0,
-        currentLevelIndex: 0,
-        comprehensionScore: 0,
-        lastAssessmentLevel: 1
-      },
-      progress: {
-        completedChapters: [],
-        masteredLevels: [],
-        currentQuestions: initialQuestions.map(q => ({
-          ...q,
-          _id: new mongoose.Types.ObjectId(),
-          setStatus: 'in_progress'
-        }))
-      },
-      status: 'in_progress',
-      startedAt: new Date(),
-      lastAccessedAt: new Date()
-    });
+    // Use service method to create instance with initial question set
+    const instance = await moduleService.startModuleInstance(moduleId, tempUserId);
 
     res.status(201).json({
       status: 'success',
-      data: {
-        instance
-      }
+      data: { instance }
     });
-  };
+  }
 
   // Get instance progress
   async getInstanceProgress(req, res) {
     const instance = await ModuleInstance.findById(req.params.instanceId)
-      .populate('moduleMasterId');
+      .populate({
+        path: 'moduleMasterId',
+        select: 'title chapters.title chapters.order'
+      });
 
     if (!instance) {
       throw new AppError('Module instance not found', 404);
     }
 
+    // Get current chapter progress
+    const currentChapterProgress = instance.chapterProgress[instance.currentState.currentChapterIndex];
+
+    // Get current question set details
+    const currentSetProgress = currentChapterProgress.questionSets.find(
+      qs => qs.setId.equals(instance.currentState.currentQuestionSetId)
+    );
+
     res.status(200).json({
       status: 'success',
       data: {
-        instance
+        instance: {
+          id: instance._id,
+          moduleTitle: instance.moduleMasterId.title,
+          currentChapter: {
+            index: instance.currentState.currentChapterIndex,
+            title: instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex]?.title
+          },
+          progress: {
+            overall: instance.currentState.comprehensionScore,
+            currentLevel: instance.currentState.lastAssessmentLevel,
+            currentSet: {
+              setNumber: currentSetProgress?.setNumber,
+              type: currentSetProgress?.type,
+              progress: {
+                completed: currentSetProgress?.questions.filter(q => q.status === 'completed').length || 0,
+                total: currentSetProgress?.questions.length || 0
+              }
+            },
+            masteredLevels: currentChapterProgress.masteredLevels
+          },
+          adaptiveHistory: instance.adaptiveHistory
+        }
       }
     });
-  };
+  }
 
+  // Get next set of questions
   async getNextQuestions(req, res) {
-    try {
-      // 1. Get instance with populated master
-      const instance = await ModuleInstance.findById(req.params.instanceId)
-        .populate({
-          path: 'moduleMasterId',
-          populate: {
-            path: 'chapters'
-          }
-        });
+    const result = await moduleService.getNextQuestions(req.params.instanceId);
 
-      if (!instance) {
-        throw new AppError('Module instance not found', 404);
-      }
-
-      // 2. Get current chapter
-      const currentChapter = instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex];
-
-      // 3. Get pending questions from instance
-      const currentQuestions = instance.progress.currentQuestions;
-      const pendingQuestions = currentQuestions.filter(q => q.status === 'pending');
-
-      // 4. Create a map of all questions from master for efficient lookup
-      const questionMap = {};
-      currentChapter.levels.forEach(level => {
-        level.questions.forEach(question => {
-          questionMap[question._id.toString()] = {
-            ...question.toObject(),
-            bloomLevel: level.bloomLevel
-          };
-        });
-      });
-
-      // 5. Map pending questions to their full details from master
-      const questionsWithDetails = pendingQuestions.map(pendingQ => {
-        const masterQuestion = questionMap[pendingQ.questionId.toString()];
-
-        if (!masterQuestion) {
-          console.error(`Question not found in master: ${pendingQ.questionId}`);
-          return null;
-        }
-
-        return {
-          _id: pendingQ._id,
-          questionId: pendingQ.questionId,
-          question: masterQuestion.question,
-          options: masterQuestion.options,
-          bloomLevel: pendingQ.bloomLevel,
-          attemptNumber: pendingQ.attemptNumber,
-          setStatus: pendingQ.setStatus
-        };
-      }).filter(q => q !== null);
-
-      // 6. Send response
-      res.status(200).json({
-        status: 'success',
-        data: {
-          questions: questionsWithDetails,
-          progress: {
-            answered: currentQuestions.filter(q => q.status === 'completed').length,
-            total: currentQuestions.length,
-            remaining: pendingQuestions.length
-          }
-        }
-      });
-    } catch (error) {
-      console.error('Error in getNextQuestions:', error);
-      throw error;
-    }
+    res.status(200).json({
+      status: 'success',
+      data: result
+    });
   }
 
   async submitAssessment(req, res) {
     const { instanceId } = req.params;
-    const { answers, preferredLanguage } = req.body;
+    const { answers, preferredLanguage = 'id' } = req.body;
 
     try {
-      // Gunakan findOneAndUpdate untuk atomic operation
-      const instance = await ModuleInstance.findOneAndUpdate(
-        { _id: instanceId },
-        {
-          $set: {
-            'currentQuestionSet.questions.$[elem].status': 'answered',
-            'currentQuestionSet.setStatus': 'completed'
-          }
-        },
-        {
-          arrayFilters: [
-            {
-              'elem.questionId': {
-                $in: answers.map(a => new mongoose.Types.ObjectId(a.questionId))
-              }
-            }
-          ],
-          new: true,
-          runValidators: true
-        }
-      ).populate('moduleMasterId');
-
-      if (!instance) {
-        throw new AppError('Module instance not found', 404);
+      // Validate answers structure
+      if (!Array.isArray(answers) || !answers.length) {
+        throw new AppError('Invalid answers format', 400);
       }
 
-      // Evaluate understanding and adapt
+      // Validate each answer
+      const validAnswers = answers.every(answer => {
+        if (!answer.questionId || typeof answer.selectedOption !== 'number') {
+          return false;
+        }
+        // Ensure questionId is a valid ObjectId
+        try {
+          return mongoose.Types.ObjectId.isValid(answer.questionId);
+        } catch (error) {
+          return false;
+        }
+      });
+
+      if (!validAnswers) {
+        throw new AppError('Invalid answer format. Each answer must have questionId (valid ObjectId) and selectedOption (number)', 400);
+      }
+
+      // Process answers with validated ObjectIds
+      const processedAnswers = answers.map(answer => ({
+        questionId: answer.questionId,
+        selectedOption: answer.selectedOption
+      }));
+
       const result = await moduleService.evaluateAndAdapt(
         instanceId,
-        answers,
+        processedAnswers,
         preferredLanguage
       );
 
       res.status(200).json({
         status: 'success',
-        data: result
+        data: {
+          evaluation: {
+            score: result.evaluation.score,
+            recommendedLevel: result.evaluation.recommendedLevel,
+            needsAdaptation: result.evaluation.needsAdaptation,
+            strengths: result.evaluation.strengths,
+            weakAreas: result.evaluation.weakAreas
+          },
+          adaptiveContent: result.adaptiveContent ? {
+            setId: result.adaptiveContent.questionSetId,
+            type: result.adaptiveContent.type,
+            questions: result.adaptiveContent.questions,
+            flashcardIds: result.adaptiveContent.flashcardIds
+          } : null
+        }
       });
     } catch (error) {
       console.error('Error in submitAssessment:', error);
       throw new AppError(error.message || 'Error submitting assessment', 500);
     }
   }
-};
+}
 
 module.exports = ModuleController;

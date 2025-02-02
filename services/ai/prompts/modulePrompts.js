@@ -39,11 +39,12 @@ Return response in JSON format:
 }
 `;
 
-const CHAPTER_IDENTIFICATION_PROMPT = JSON_FORMAT_RULES +  `
+const CHAPTER_IDENTIFICATION_PROMPT = JSON_FORMAT_RULES + `
 Analyze the document content and structure carefully. For each identified chapter:
 1. Extract the main title
 2. Determine logical order
 3. Create a brief excerpt summarizing key points (max 150 characters)
+4. Makesure to not include subchapters as chapters.
 
 Ensure chapters are properly sequenced and represent distinct learning units.
 
@@ -55,9 +56,9 @@ Return response in JSON format:
 }]
 `;
 
-const FLASHCARD_GENERATION_PROMPT =  JSON_FORMAT_RULES + `
+const FLASHCARD_GENERATION_PROMPT = JSON_FORMAT_RULES + `
 For the given chapter title and content, create comprehensive flashcards that:
-1. Cover all key concepts progressively
+1. Cover all key concepts of that given chapter progressively
 2. Align with Bloom's Taxonomy levels (1-6)
 3. Include clear, concise front and detailed back content
 4. Ensure logical learning progression
@@ -73,98 +74,189 @@ Return response in JSON format:
   "content": "string (key concept)",
   "comprehensionLevel": number (1-6),
   "flashcardFront": "string (question/prompt)",
-  "flashcardBack": "string (detailed explanation)"
+  "flashcardBack": "string (detailed explanation)",
+  "relatedConcepts": "[string,..,string]" (related concepts in the module/chapters explained by the flashcard)
 }]
 `;
 
-const ASSESSMENT_GENERATION_PROMPT =  JSON_FORMAT_RULES + `
+const ASSESSMENT_GENERATION_PROMPT = JSON_FORMAT_RULES + `
 Create a comprehensive assessment for the chapter that:
 1. Covers all identified key concepts
-2. Distributes questions across all Bloom's levels (1-6)
+2. Provides both cognitive complexity (Bloom's) and difficulty levels
 3. Ensures clear, unambiguous questions
 4. Provides plausible distractors
 5. Includes detailed explanations
-6. In total, 10 Questions
-7. Must be a multiple choice question.
+6. Total of 10 Questions
+7. Must be multiple choice questions
+8. All the Bloom's level must exist (total 6 levels)
 
-Questions should follow Bloom's Taxonomy:
-Level 1 (Remember): Recall of facts
-Level 2 (Understand): Explain concepts
+Cognitive Complexity (Bloom's Taxonomy):
+Level 1 (Remember): Basic recall of facts and definitions
+Level 2 (Understand): Explain concepts and principles
 Level 3 (Apply): Use information in new situations
-Level 4 (Analyze): Draw connections
-Level 5 (Evaluate): Justify a stand/decision
-Level 6 (Create): Produce new content
+Level 4 (Analyze): Draw connections and relationships
+Level 5 (Evaluate): Make judgments based on criteria
+Level 6 (Create): Generate new ideas or perspectives
+
+Difficulty Levels:
+Level 1 (Very Easy): Most students can answer correctly
+Level 2 (Easy): Many students can answer correctly
+Level 3 (Moderate): Average difficulty, requires good understanding
+Level 4 (Hard): Challenging, requires deep understanding
+Level 5 (Very Hard): Most challenging, requires mastery
+
+Note: Bloom's level and difficulty level are independent. A question can be:
+- High Bloom's (6) but low difficulty (1)
+- Low Bloom's (1) but high difficulty (5)
 
 Return response in JSON format:
 [{
-  "question": "string",
+  "question": "string (clear, focused question)",
   "options": ["string", "string", "string", "string"],
   "correctAnswer": number (0-3),
-  "explanation": "string",
-  "bloomLevel": number (1-6)
+  "explanation": "string (detailed explanation)",
+  "bloomLevel": number (1-6, required, indicates cognitive complexity),
+  "difficultyLevel": number (1-5, required, indicates challenge level),
+  "learningObjective": "string (what student should learn)",
+  "targetedConcept": "string (specific concept being tested)"
 }]
+
+Example:
+{
+  "question": "What is the definition of osmosis?",
+  "options": ["Option A", "Option B", "Option C", "Option D"],
+  "correctAnswer": 0,
+  "explanation": "Detailed explanation here",
+  "bloomLevel": 1,           // Remember - just recalling a definition
+  "difficultyLevel": 4,      // Hard - despite being recall, the concept is complex
+  "learningObjective": "Understand the basic concept of osmosis",
+  "targetedConcept": "Osmosis"
+}
 `;
 
-const EVALUATION_PROMPT =  JSON_FORMAT_RULES + `
-Analyze the user's answers and performance to:
-1. Calculate comprehension score
-2. Determine mastery level
-3. Identify knowledge gaps
-4. Recommend appropriate Bloom's level
-5. Decide if adaptation is needed
 
-Consider:
-- Current Bloom's level: {currentLevel}
-- Questions attempted: {questionCount}
-- Correct answers: {correctCount}
-- Pattern of errors
-- Time taken per question
+const EVALUATION_PROMPT = JSON_FORMAT_RULES + `
+Analyze the student's assessment performance in detail. You are evaluating their understanding of the material
+and determining if they need a new adapted question set.
+
+Assessment Context:
+- Current Bloom's Level: {currentLevel}
+- Total Questions Attempted: {questionCount}
+- Correct Answers: {correctCount}
+- Detailed Answers: {answers}
+
+Evaluation Requirements:
+1. Calculate comprehension score (0-100) based on:
+   - Correct answers percentage
+   - Question difficulty levels
+   - Answer patterns within each Bloom's level
+
+2. Analyze learning progression:
+   - Compare performance across different Bloom's levels
+   - Identify concepts that need reinforcement
+   - Evaluate readiness for level progression
+
+3. Identify specific knowledge gaps:
+   - List specific topics where errors occurred
+   - Group related misconceptions
+   - Note patterns in incorrect answers
+
+4. Determine mastery and adaptation needs:
+   - Assess if current level is mastered (≥80% correct)
+   - Decide if adaptation is needed (<70% correct)
+   - Recommend level progression or reinforcement
 
 Return response in JSON format:
 {
   "score": number (0-100),
   "recommendedLevel": number (1-6),
   "needsAdaptation": boolean,
-  "weakAreas": ["string"],
-  "strengths": ["string"],
+  "weakAreas": [
+    {
+      "topic": "string (specific topic/concept)",
+      "bloomLevel": number (1-6),
+      "detectedIssues": ["string (specific misconceptions)"],
+      "recommendedFocus": "string (what to focus on)"
+    }
+  ],
+  "strengths": [
+    {
+      "topic": "string (mastered topic/concept)",
+      "bloomLevel": number (1-6),
+      "demonstratedSkills": ["string (specific skills shown)"]
+    }
+  ],
   "adaptationStrategy": {
-    "focusAreas": ["string"],
-    "recommendedApproach": "string"
+    "focusAreas": ["string (specific topics to target)"],
+    "recommendedApproach": "string (detailed learning strategy)",
+    "questionDistribution": [
+      {
+        "bloomLevel": number (1-6),
+        "count": number (questions to generate at this level),
+        "topics": ["string (topics to cover)"]
+      }
+    ]
   }
 }
 `;
 
-const ADAPTIVE_CONTENT_PROMPT =  JSON_FORMAT_RULES + `
-Based on the evaluation results, generate adapted content that:
-1. Addresses identified knowledge gaps
-2. Reinforces weak areas
-3. Maintains appropriate difficulty
-4. Provides scaffolded learning
-5. Targets specific Bloom's level: {targetLevel}
+const ADAPTIVE_CONTENT_PROMPT = JSON_FORMAT_RULES + `
+Generate a new complete assessment set based on the evaluation results. The set must include exactly 10 questions
+and targeted flashcards for reinforcement.
 
-Focus areas: {focusAreas}
-Weak concepts: {weakConcepts}
+Adaptation Context:
+- Target Bloom's Level: {targetLevel}
+- Focus Areas: {focusAreas}
+- Weak Concepts: {weakConcepts}
+- Current Chapter: {chapterTitle}
+
+Requirements for Question Generation:
+1. Generate exactly 10 questions that:
+   - Target identified weak areas
+   - Follow the recommended level distribution
+   - Provide scaffolded learning progression
+   - Include detailed explanations
+
+2. Each question must:
+   - Address specific misconceptions
+   - Include clear learning objectives
+   - Provide comprehensive explanations
+   - Follow multiple-choice format
+
+3. Generate targeted flashcards that:
+   - Focus on weak areas
+   - Provide foundational knowledge
+   - Include practice exercises
+   - Support concept mastery
 
 Return response in JSON format:
 {
   "questions": [{
-    "question": "string",
-    "options": ["string"],
-    "correctAnswer": number,
-    "explanation": "string",
-    "bloomLevel": number,
-    "focusArea": "string"
+    "question": "string (clear, focused question)",
+    "options": ["string (4 options)"],
+    "correctAnswer": number (0-3),
+    "explanation": "string (detailed explanation including why other options are incorrect)",
+    "bloomLevel": number (1-6),
+    "targetedConcept": "string (specific concept being tested)",
+    "learningObjective": "string (what this question aims to assess)"
   }],
   "newFlashcards": [{
-    "content": "string",
-    "comprehensionLevel": number,
-    "flashcardFront": "string",
-    "flashcardBack": "string"
-  }]
+    "content": "string (core concept)",
+    "comprehensionLevel": number (1-6),
+    "flashcardFront": "string (question/prompt)",
+    "flashcardBack": "string (detailed explanation)",
+    "relatedConcepts": ["string (connected topics)"],
+    "practicePrompt": "string (application exercise)"
+  }],
+  "adaptationMetadata": {
+    "targetedWeakAreas": ["string (areas being addressed)"],
+    "learningProgression": "string (how this set builds understanding)",
+    "recommendedStudyOrder": ["string (ordered concepts)"]
+  }
 }
 `;
 
-const MODULE_METADATA_PROMPT =  JSON_FORMAT_RULES + `
+const MODULE_METADATA_PROMPT = JSON_FORMAT_RULES + `
 Analyze this document and generate a suitable title and description for a learning module.
 
 Requirements:
