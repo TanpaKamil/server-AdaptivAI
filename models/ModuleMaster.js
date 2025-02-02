@@ -131,24 +131,105 @@ const ModuleMasterSchema = new mongoose.Schema({
         required: true,
         index: true
     },
-    chapters: [chapterSchema],
+    pdfUrl: {
+        type: String,
+        required: true
+    },
+    chapters: [{
+        title: {
+            type: String,
+            required: true
+        },
+        order: {
+            type: Number,
+            required: true
+        },
+        excerpt: {
+            type: String,
+            required: true
+        },
+        summaries: [{
+            content: {
+                type: String,
+                required: true
+            },
+            comprehensionLevel: {
+                type: Number,
+                required: true,
+                min: 1,
+                max: 6
+            },
+            flashcardFront: {
+                type: String,
+                required: true
+            },
+            flashcardBack: {
+                type: String,
+                required: true
+            }
+        }],
+        levels: [{
+            bloomLevel: {
+                type: Number,
+                required: true,
+                min: 1,
+                max: 6
+            },
+            questions: [{
+                question: {
+                    type: String,
+                    required: true
+                },
+                options: [{
+                    type: String,
+                    required: true
+                }],
+                correctAnswer: {
+                    type: Number,
+                    required: true
+                },
+                bloomLevel: {
+                    type: Number,
+                    required: true,
+                    min: 1,
+                    max: 6
+                },
+                usersAttempted: [{
+                    userId: {
+                        type: mongoose.Schema.Types.ObjectId,
+                        required: true
+                    },
+                    isCorrect: {
+                        type: Boolean,
+                        required: true
+                    },
+                    attemptedAt: {
+                        type: Date,
+                        default: Date.now
+                    }
+                }]
+            }]
+        }]
+    }],
     subscribedUsers: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
-    isRecommended: {
-        type: Boolean,
-        default: false
-    },
     metadata: {
-        type: metadataSchema,
-        default: () => ({
-            caches: []
-        })
-    },
-    pdfUrl: {
-        type: String,
-        required: true
+        caches: [{
+            userId: {
+                type: mongoose.Schema.Types.ObjectId,
+                required: true
+            },
+            cacheName: {
+                type: String,
+                required: true
+            },
+            expiresAt: {
+                type: Date,
+                required: true
+            }
+        }]
     }
 }, {
     timestamps: true

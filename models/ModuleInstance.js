@@ -162,18 +162,67 @@ const ModuleInstanceSchema = new mongoose.Schema({
             max: 6
         }
     },
-    currentQuestionSet: {
-        type: currentQuestionSetSchema,
-        default: () => ({}) // Initialize empty by default
-    },
     progress: {
         completedChapters: [{
             type: mongoose.Schema.Types.ObjectId
         }],
-        masteredLevels: [masteredLevelSchema],
-        currentQuestions: [currentQuestionSchema]
+        masteredLevels: [{
+            chapterId: {
+                type: mongoose.Schema.Types.ObjectId,
+                required: true
+            },
+            levelId: {
+                type: mongoose.Schema.Types.ObjectId,
+                required: true
+            },
+            masteredAt: {
+                type: Date,
+                default: Date.now
+            }
+        }],
+        currentQuestions: [{
+            questionId: {
+                type: mongoose.Schema.Types.ObjectId,
+                required: true
+            },
+            status: {
+                type: String,
+                enum: ['pending', 'completed'],
+                default: 'pending'
+            },
+            userAnswer: Number,
+            isCorrect: Boolean,
+            answeredAt: Date
+        }]
     },
-    adaptiveHistory: [adaptiveHistorySchema],
+    adaptiveHistory: [{
+        timestamp: {
+            type: Date,
+            default: Date.now
+        },
+        previousLevel: {
+            type: Number,
+            required: true,
+            min: 1,
+            max: 6
+        },
+        newLevel: {
+            type: Number,
+            required: true,
+            min: 1,
+            max: 6
+        },
+        assessmentScore: {
+            type: Number,
+            required: true,
+            min: 0,
+            max: 100
+        },
+        generatedQuestions: [{
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Question'
+        }]
+    }],
     startedAt: {
         type: Date,
         default: Date.now

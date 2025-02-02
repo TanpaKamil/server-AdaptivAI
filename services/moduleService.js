@@ -237,13 +237,13 @@ class ModuleService {
                     path: 'moduleMasterId',
                     populate: { path: 'metadata.caches' }
                 });
-    
+
             if (!instance) throw new AppError('Module instance not found', 404);
-    
+
             // Get latest valid cache
             let latestCache = instance.moduleMasterId.metadata?.caches
                 ?.find(c => new Date(c.expiresAt) > new Date());
-    
+
             if (!latestCache && instance.moduleMasterId.pdfUrl) {
                 console.log('Cache expired or not found, attempting to refresh...');
                 const newCache = await this.refreshCache(
@@ -257,17 +257,17 @@ class ModuleService {
                     expiresAt: new Date(Date.now() + 3600000)
                 };
             }
-    
+
             if (!latestCache) {
                 throw new AppError('Could not access or refresh PDF content', 400);
             }
-    
+
             // Get model with cached content
             const model = geminiConfig.genAI.getGenerativeModelFromCachedContent({
                 model: "gemini-1.5-flash-002",
                 name: latestCache.cacheName
             });
-    
+
             // First evaluate performance
             const evalResult = await model.generateContent({
                 contents: [{
@@ -281,12 +281,12 @@ class ModuleService {
                     }]
                 }]
             });
-    
+
             const evaluation = processAIResponse(evalResult.response.text(), 'evaluation');
-            
+
             let newQuestions = [];
             let newFlashcards = [];
-    
+
             if (evaluation.needsAdaptation) {
                 // Generate adaptive content using cached context
                 const adaptiveResult = await model.generateContent({
@@ -301,9 +301,9 @@ class ModuleService {
                         }]
                     }]
                 });
-    
+
                 const adaptiveContent = processAIResponse(adaptiveResult.response.text(), 'questions');
-    
+
                 if (adaptiveContent.questions?.length > 0) {
                     // Update ModuleMaster with new questions
                     await ModuleMaster.findOneAndUpdate(
@@ -322,7 +322,7 @@ class ModuleService {
                     );
                     newQuestions = adaptiveContent.questions;
                 }
-    
+
                 if (adaptiveContent.newFlashcards?.length > 0) {
                     // Update ModuleMaster with new flashcards
                     await ModuleMaster.findOneAndUpdate(
@@ -341,7 +341,7 @@ class ModuleService {
                     newFlashcards = adaptiveContent.newFlashcards;
                 }
             }
-    
+
             // Update instance state and adaptive history
             await ModuleInstance.findOneAndUpdate(
                 { _id: moduleInstanceId },
@@ -367,7 +367,7 @@ class ModuleService {
                     }
                 }
             );
-    
+
             return {
                 evaluation: {
                     ...evaluation,
@@ -382,7 +382,7 @@ class ModuleService {
                     needsAdaptation: evaluation.needsAdaptation
                 }
             };
-    
+
         } catch (error) {
             console.error('Error in evaluation and adaptation:', error);
             throw new AppError('Failed to evaluate and adapt: ' + error.message, 500);
@@ -397,33 +397,42 @@ class ModuleService {
             if (!instance) throw new AppError('Module instance not found', 404);
 
             const currentChapter = instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex];
-            const currentLevel = currentChapter.levels.find(
-                l => l.bloomLevel === instance.currentState.lastAssessmentLevel
-            );
 
-            if (!currentLevel) {
-                throw new AppError('No questions available for current level', 404);
+            // Get all pending questions from currentQuestions
+            const pendingQuestions = instance.progress.currentQuestions
+                .filter(q => q.status === 'pending')
+                .slice(0, count);
+
+            if (pendingQuestions.length === 0) {
+                throw new AppError('No more pending questions available', 404);
             }
 
-            // Get questions that haven't been attempted yet
-            const attemptedQuestionIds = instance.progress.currentQuestions.map(q => q.questionId.toString());
-            const availableQuestions = currentLevel.questions.filter(
-                q => !attemptedQuestionIds.includes(q._id.toString())
-            );
+            // Map pending questions to full question data
+            const questionsWithDetails = pendingQuestions.map(pendingQ => {
+                const level = currentChapter.levels.find(
+                    l => l.bloomLevel === pendingQ.bloomLevel
+                );
 
-            // Select next batch of questions
-            const nextQuestions = availableQuestions.slice(0, count);
+                const fullQuestion = level?.questions.find(
+                    q => q._id.toString() === pendingQ.questionId.toString()
+                );
 
-            if (nextQuestions.length === 0) {
-                throw new AppError('No more questions available at this level', 404);
-            }
+                return {
+                    ...pendingQ.toObject(),
+                    question: fullQuestion?.question,
+                    options: fullQuestion?.options
+                };
+            });
 
             return {
-                questions: nextQuestions,
+                questions: questionsWithDetails,
                 currentLevel: instance.currentState.lastAssessmentLevel,
                 progress: {
-                    completedQuestions: attemptedQuestionIds.length,
-                    totalQuestions: currentLevel.questions.length
+                    completedQuestions: instance.progress.currentQuestions.filter(
+                        q => q.status === 'completed'
+                    ).length,
+                    totalQuestions: instance.progress.currentQuestions.length,
+                    pendingQuestions: pendingQuestions.length
                 }
             };
         } catch (error) {
@@ -436,17 +445,17 @@ class ModuleService {
         let cache = null;
         try {
             console.log('Refreshing cache for module:', moduleId);
-    
+
             // Parse the Cloudinary URL components
             const urlParts = pdfUrl.split('/');
             const version = urlParts.find(part => part.startsWith('v')); // e.g., 'v1738425310'
             const folder = 'adaptive-learning';
             const filename = urlParts[urlParts.length - 1]; // Gets the full filename with extension
             const publicId = `${folder}/${filename.replace('.pdf', '')}`; // Includes folder in public_id
-    
+
             // Generate authentication parameters
             const timestamp = Math.round(new Date().getTime() / 1000);
-    
+
             // Parameters for signing
             const params = {
                 timestamp: timestamp,
@@ -455,13 +464,13 @@ class ModuleService {
                 type: 'upload',
                 version: version?.replace('v', '') // Remove 'v' prefix if present
             };
-    
+
             // Generate signature
             const signature = cloudinary.utils.api_sign_request(
                 params,
                 process.env.CLOUDINARY_API_SECRET
             );
-    
+
             // Construct secure download URL with all components
             const downloadUrl = cloudinary.url(publicId, {
                 resource_type: 'raw',
@@ -472,9 +481,9 @@ class ModuleService {
                 secure: true,
                 format: 'pdf'
             });
-    
+
             console.log('Constructed download URL:', downloadUrl);
-    
+
             // Fetch the PDF
             const response = await axios.get(downloadUrl, {
                 responseType: 'arraybuffer',
@@ -482,10 +491,10 @@ class ModuleService {
                     'Accept': 'application/pdf'
                 }
             });
-    
+
             // Convert to base64
             const base64Data = Buffer.from(response.data).toString('base64');
-    
+
             // Create cache with Gemini
             cache = await this.cacheManager.create({
                 model: 'models/gemini-1.5-flash-002',
@@ -501,7 +510,7 @@ class ModuleService {
                 }],
                 ttlSeconds: 3600
             });
-    
+
             // Update module with new cache info
             const updatedModule = await ModuleMaster.findByIdAndUpdate(moduleId, {
                 $push: {
@@ -512,10 +521,10 @@ class ModuleService {
                     }
                 }
             }, { new: true });
-    
+
             console.log('Cache refreshed successfully:', cache.name);
             return cache;
-    
+
         } catch (error) {
             console.error('Error refreshing cache:', error);
             if (cache?.name) {
@@ -523,7 +532,51 @@ class ModuleService {
             }
             throw new AppError(`Failed to refresh cache: ${error.message}`, 500);
         }
-    }
+    };
+
+    async getInitialQuestions(moduleId) {
+        try {
+            const moduleMaster = await ModuleMaster.findById(moduleId);
+            if (!moduleMaster) {
+                throw new Error('Module master not found');
+            }
+
+            // Get all questions from the module
+            const allQuestions = moduleMaster.questions || [];
+
+            // Group questions by Bloom's level
+            const questionsByLevel = {};
+            for (let i = 1; i <= 6; i++) {
+                questionsByLevel[i] = allQuestions.filter(q => q.bloomLevel === i);
+            }
+
+            // Select questions based on distribution:
+            // 2 questions each from levels 1-4
+            // 1 question each from levels 5-6
+            let selectedQuestions = [];
+
+            // Get 2 questions from levels 1-4
+            for (let level = 1; level <= 4; level++) {
+                const levelQuestions = questionsByLevel[level] || [];
+                const shuffled = levelQuestions.sort(() => Math.random() - 0.5);
+                selectedQuestions = [...selectedQuestions, ...shuffled.slice(0, 2)];
+            }
+
+            // Get 1 question from levels 5-6
+            for (let level = 5; level <= 6; level++) {
+                const levelQuestions = questionsByLevel[level] || [];
+                const shuffled = levelQuestions.sort(() => Math.random() - 0.5);
+                selectedQuestions = [...selectedQuestions, ...shuffled.slice(0, 1)];
+            }
+
+            // Shuffle final selection
+            selectedQuestions = selectedQuestions.sort(() => Math.random() - 0.5);
+
+            return selectedQuestions;
+        } catch (error) {
+            throw new Error(`Failed to get initial questions: ${error.message}`);
+        }
+    };
 }
 
 module.exports = new ModuleService();

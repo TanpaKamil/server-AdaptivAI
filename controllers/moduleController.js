@@ -8,7 +8,7 @@ const { ModuleInstance } = require('../models/ModuleInstance');
 const mongoose = require('mongoose');
 const fs = require('fs').promises;
 
-const moduleController = {
+class ModuleController {
 
   async createModule(req, res) {
     const { title, description, preferredLanguage = 'id' } = req.body;
@@ -77,7 +77,7 @@ const moduleController = {
         error.statusCode || 500
       );
     }
-  },
+  };
 
   // Get all modules
   async getAllModules(req, res) {
@@ -91,7 +91,7 @@ const moduleController = {
         modules
       }
     });
-  },
+  };
 
   // Get specific module
   async getModuleById(req, res) {
@@ -107,7 +107,7 @@ const moduleController = {
         module
       }
     });
-  },
+  };
 
   // Generate content for a chapter
   async generateChapterContent(req, res) {
@@ -142,7 +142,7 @@ const moduleController = {
         chapter
       }
     });
-  },
+  };
 
   // Get chapter content
   async getChapterContent(req, res) {
@@ -164,12 +164,13 @@ const moduleController = {
         chapter
       }
     });
-  },
+  };
 
   async startModuleInstance(req, res) {
     const tempUserId = new mongoose.Types.ObjectId();
     const { moduleId } = req.params;
 
+    // Get module master
     const module = await ModuleMaster.findById(moduleId);
     if (!module) {
       throw new AppError('Module not found', 404);
@@ -181,15 +182,44 @@ const moduleController = {
       throw new AppError('Chapter not found', 404);
     }
 
-    // Collect questions from all levels for initial assessment
-    const initialQuestions = initialChapter.levels.reduce((acc, level) => {
-      return [...acc, ...level.questions.map(q => ({
-        questionId: q._id,
-        status: 'active',
-        bloomLevel: level.bloomLevel
-      }))];
-    }, []);
+    // Initialize initial questions with metadata
+    const initialQuestions = [];
 
+    // Get 2 questions each from levels 1-4
+    for (let level = 1; level <= 4; level++) {
+      const levelQuestions = initialChapter.levels
+        .find(l => l.bloomLevel === level)?.questions || [];
+
+      const selected = levelQuestions
+        .slice(0, 2)
+        .map(q => ({
+          questionId: q._id,
+          status: 'pending',
+          bloomLevel: level,
+          attemptNumber: 1
+        }));
+
+      initialQuestions.push(...selected);
+    }
+
+    // Get 1 question each from levels 5-6
+    for (let level = 5; level <= 6; level++) {
+      const levelQuestions = initialChapter.levels
+        .find(l => l.bloomLevel === level)?.questions || [];
+
+      const selected = levelQuestions
+        .slice(0, 1)
+        .map(q => ({
+          questionId: q._id,
+          status: 'pending',
+          bloomLevel: level,
+          attemptNumber: 1
+        }));
+
+      initialQuestions.push(...selected);
+    }
+
+    // Create new instance with initial questions
     const instance = await ModuleInstance.create({
       moduleMasterId: moduleId,
       userId: tempUserId,
@@ -199,11 +229,18 @@ const moduleController = {
         comprehensionScore: 0,
         lastAssessmentLevel: 1
       },
-      currentQuestionSet: {
-        questions: initialQuestions,
-        setStatus: 'in_progress',
-        isInitialAssessment: true // Flag untuk menandai ini assessment awal
-      }
+      progress: {
+        completedChapters: [],
+        masteredLevels: [],
+        currentQuestions: initialQuestions.map(q => ({
+          ...q,
+          _id: new mongoose.Types.ObjectId(),
+          setStatus: 'in_progress'
+        }))
+      },
+      status: 'in_progress',
+      startedAt: new Date(),
+      lastAccessedAt: new Date()
     });
 
     res.status(201).json({
@@ -212,7 +249,7 @@ const moduleController = {
         instance
       }
     });
-  },
+  };
 
   // Get instance progress
   async getInstanceProgress(req, res) {
@@ -229,10 +266,11 @@ const moduleController = {
         instance
       }
     });
-  },
+  };
 
   async getNextQuestions(req, res) {
     try {
+      // 1. Get instance with populated master
       const instance = await ModuleInstance.findById(req.params.instanceId)
         .populate({
           path: 'moduleMasterId',
@@ -241,51 +279,57 @@ const moduleController = {
           }
         });
 
-      console.log("Current Chapter:", instance.moduleMasterId.chapters[0].title);
-      console.log("Current Chapter Levels:", instance.moduleMasterId.chapters[0].levels);
-      console.log("Question Set:", instance.currentQuestionSet);
+      if (!instance) {
+        throw new AppError('Module instance not found', 404);
+      }
 
-      // Get active questions directly from ModuleMaster
+      // 2. Get current chapter
       const currentChapter = instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex];
-      const currentSet = instance.currentQuestionSet;
 
-      // Flatten all questions from all levels
-      const allQuestions = currentChapter.levels.reduce((acc, level) => {
-        return [...acc, ...level.questions.map(q => ({
-          ...q.toObject(),
-          bloomLevel: level.bloomLevel
-        }))];
-      }, []);
+      // 3. Get pending questions from instance
+      const currentQuestions = instance.progress.currentQuestions;
+      const pendingQuestions = currentQuestions.filter(q => q.status === 'pending');
 
-      // Map active questions from currentSet to full questions
-      const activeQuestions = currentSet.questions
-        .filter(q => q.status === 'active')
-        .map(activeQ => {
-          const fullQuestion = allQuestions.find(q =>
-            q._id.toString() === activeQ.questionId.toString()
-          );
+      // 4. Create a map of all questions from master for efficient lookup
+      const questionMap = {};
+      currentChapter.levels.forEach(level => {
+        level.questions.forEach(question => {
+          questionMap[question._id.toString()] = {
+            ...question.toObject(),
+            bloomLevel: level.bloomLevel
+          };
+        });
+      });
 
-          if (fullQuestion) {
-            return {
-              questionId: activeQ.questionId,
-              question: fullQuestion.question,
-              options: fullQuestion.options,
-              bloomLevel: fullQuestion.bloomLevel
-            };
-          }
+      // 5. Map pending questions to their full details from master
+      const questionsWithDetails = pendingQuestions.map(pendingQ => {
+        const masterQuestion = questionMap[pendingQ.questionId.toString()];
+
+        if (!masterQuestion) {
+          console.error(`Question not found in master: ${pendingQ.questionId}`);
           return null;
-        })
-        .filter(q => q !== null);
+        }
 
+        return {
+          _id: pendingQ._id,
+          questionId: pendingQ.questionId,
+          question: masterQuestion.question,
+          options: masterQuestion.options,
+          bloomLevel: pendingQ.bloomLevel,
+          attemptNumber: pendingQ.attemptNumber,
+          setStatus: pendingQ.setStatus
+        };
+      }).filter(q => q !== null);
+
+      // 6. Send response
       res.status(200).json({
         status: 'success',
         data: {
-          questions: activeQuestions,
-          isInitialAssessment: currentSet.isInitialAssessment,
+          questions: questionsWithDetails,
           progress: {
-            answered: currentSet.questions.filter(q => q.status === 'answered').length,
-            total: currentSet.questions.length,
-            remaining: currentSet.questions.filter(q => q.status === 'active').length
+            answered: currentQuestions.filter(q => q.status === 'completed').length,
+            total: currentQuestions.length,
+            remaining: pendingQuestions.length
           }
         }
       });
@@ -293,7 +337,7 @@ const moduleController = {
       console.error('Error in getNextQuestions:', error);
       throw error;
     }
-  },
+  }
 
   async submitAssessment(req, res) {
     const { instanceId } = req.params;
@@ -344,4 +388,4 @@ const moduleController = {
   }
 };
 
-module.exports = moduleController;
+module.exports = ModuleController;

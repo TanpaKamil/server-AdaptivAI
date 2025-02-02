@@ -37,6 +37,13 @@ const cleanAndParseAIResponse = (responseText) => {
  */
 const validateAIResponse = (parsed, type) => {
     switch (type) {
+        case 'metadata':
+            return {
+                title: parsed.title || 'Untitled',
+                description: parsed.description || '',
+                excerpt: parsed.excerpt || ''
+            };
+
         case 'chapters':
             if (!Array.isArray(parsed)) {
                 throw new Error('Chapters response must be an array');

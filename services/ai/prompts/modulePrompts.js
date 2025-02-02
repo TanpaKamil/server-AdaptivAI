@@ -85,6 +85,7 @@ Create a comprehensive assessment for the chapter that:
 4. Provides plausible distractors
 5. Includes detailed explanations
 6. In total, 10 Questions
+7. Must be a multiple choice question.
 
 Questions should follow Bloom's Taxonomy:
 Level 1 (Remember): Recall of facts

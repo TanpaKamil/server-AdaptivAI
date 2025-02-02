@@ -2,7 +2,10 @@ const express = require('express');
 const router = express.Router();
 const upload = require('../config/multer');
 const { asyncHandler } = require('../middlewares/errorHandler');
-const moduleController = require('../controllers/moduleController');
+const ModuleController = require('../controllers/moduleController');
+
+// Create a single instance of the controller
+const moduleController = new ModuleController();
 
 // Add debug middleware
 router.use((req, res, next) => {
@@ -11,45 +14,45 @@ router.use((req, res, next) => {
     next();
 });
 
-// Chapter Generation Routes - Move these above the more generic routes
+// Chapter Generation Routes
 router.post('/:moduleId/chapters/:chapterId/generate',
-    asyncHandler(moduleController.generateChapterContent)
+    asyncHandler(moduleController.generateChapterContent.bind(moduleController))
 );
 
 router.get('/:moduleId/chapters/:chapterId',
-    asyncHandler(moduleController.getChapterContent)
+    asyncHandler(moduleController.getChapterContent.bind(moduleController))
 );
 
 // Module Instance Routes
 router.post('/:moduleId/start',
-    asyncHandler(moduleController.startModuleInstance)
+    asyncHandler(moduleController.startModuleInstance.bind(moduleController))
 );
 
-// Move instance routes before the generic moduleId route
+// Instance routes
 router.get('/instance/:instanceId',
-    asyncHandler(moduleController.getInstanceProgress)
+    asyncHandler(moduleController.getInstanceProgress.bind(moduleController))
 );
 
 router.post('/instance/:instanceId/submit',
-    asyncHandler(moduleController.submitAssessment)
+    asyncHandler(moduleController.submitAssessment.bind(moduleController))
 );
 
 router.get('/instance/:instanceId/next-questions',
-    asyncHandler(moduleController.getNextQuestions)
+    asyncHandler(moduleController.getNextQuestions.bind(moduleController))
 );
 
-// Generic module routes at the end
+// Generic module routes
 router.post('/upload', 
     upload.single('pdf'),
-    asyncHandler(moduleController.createModule)
+    asyncHandler(moduleController.createModule.bind(moduleController))
 );
 
 router.get('/',
-    asyncHandler(moduleController.getAllModules)
+    asyncHandler(moduleController.getAllModules.bind(moduleController))
 );
 
 router.get('/:moduleId',
-    asyncHandler(moduleController.getModuleById)
+    asyncHandler(moduleController.getModuleById.bind(moduleController))
 );
 
 module.exports = router;
