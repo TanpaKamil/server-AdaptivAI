@@ -141,9 +141,19 @@ and determining if they need a new adapted question set.
 
 Assessment Context:
 - Current Bloom's Level: {currentLevel}
+- Current Difficulty Level: {currentDifficultyLevel}
 - Total Questions Attempted: {questionCount}
 - Correct Answers: {correctCount}
 - Detailed Answers: {answers}
+- Attempted Sets Count: {attemptedSetsCount}
+- Last Set Score: {lastSetScore}
+- Attempts At New Level: {attemptsAtNewLevel}
+- Recently Increased Difficulty : {recentlyIncreasedDifficulty}
+- Consistent Performance : {consistentPerformance}
+- Concept Mastery At Current Level : {conceptMasteryAtCurrentLevel}
+- Bloom Mastery Levels 1-2: {bloomMastery_1_2}
+- Bloom Mastery Levels 3-4: {bloomMastery_3_4}
+- Bloom Mastery Levels 5-6: {bloomMastery_5_6}
 
 Evaluation Requirements:
 1. Calculate comprehension score (0-100) based on:
@@ -161,10 +171,39 @@ Evaluation Requirements:
    - Group related misconceptions
    - Note patterns in incorrect answers
 
-4. Determine mastery and adaptation needs:
-   - Assess if current level is mastered (≥80% correct)
-   - Decide if adaptation is needed (<70% correct)
-   - Recommend level progression or reinforcement
+4. Determine mastery and adaptation needs based on the following logic:
+
+   - **Chapter Progression:** If ALL the following conditions are true, then:
+        - Set 'recommendedLevel' to {currentLevel + 1} (increase the level by one).
+        - Set 'needsAdaptation' to true.
+        - The conditions are:
+            - Score is greater than or equal to 80.
+            - Current Difficulty Level is greater than or equal to 4.
+            - Attempted Sets Count is greater than or equal to 3.
+            - Bloom Mastery Levels 1-2 is greater than or equal to 85%.
+            - Bloom Mastery Levels 3-4 is greater than or equal to 80%.
+            - Bloom Mastery Levels 5-6 is greater than or equal to 75%.
+            - Consistent Performance is true (last 2 sets above 75%).
+
+   - **Harder Adaptation:** If ANY of the following conditions are true, then:
+       - Set 'needsAdaptation' to true.
+     - If Score >= 85, Current Difficulty Level < 5, and Last Set Score >= 80, then increase difficulty.
+     - If Score >= 80, Current Bloom Level < 6, and Concept Mastery At Current Level >= 80, then increase the bloom level.
+
+    - **Maintain Level:** If ANY of the following conditions are true, then:
+          - Set 'needsAdaptation' to false.
+      - If Score is between 70 and 84, Current Difficulty Level is greater than or equal to 3, and Consistent Performance is true.
+      - If Score is greater than or equal to 75, Recently Increased Difficulty is true, and Attempts At New Level is less than 2.
+
+    - **Easier Adaptation:** If ANY of the following conditions are true, then:
+        - Set 'needsAdaptation' to true.
+        - If Score < 60 and Attempts At Current Level >= 2, decrease the difficulty.
+        - If Score < 50 and Current Difficulty Level > 1, immediately decrease the difficulty.
+
+    - If none of the above conditions for chapter progression were met, then:
+       - Set 'recommendedLevel' to the current level.
+       - If 'needsAdaptation' was not already set to true, then set 'needsAdaptation' to false.
+
 
 Return response in JSON format:
 {
