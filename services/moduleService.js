@@ -328,28 +328,6 @@ class ModuleService {
         }
     }
 
-    async generateInitialQuestionSet(module, chapter) {
-        // Generate balanced initial set of 10 questions
-        const questionDistribution = [
-            { level: 1, count: 2 },
-            { level: 2, count: 2 },
-            { level: 3, count: 2 },
-            { level: 4, count: 2 },
-            { level: 5, count: 1 },
-            { level: 6, count: 1 }
-        ];
-
-        return {
-            setNumber: 1,
-            type: 'initial',
-            questions: await this.generateQuestions(module, chapter, questionDistribution),
-            bloomLevelDistribution: questionDistribution.reduce((acc, item) => {
-                acc[`level${item.level}`] = item.count;
-                return acc;
-            }, {})
-        };
-    }
-
     async evaluateAndAdapt(instanceId, answers, preferredLanguage) {
         try {
             // Input validation
@@ -391,7 +369,70 @@ class ModuleService {
             // Get PDF content for AI evaluation
             const pdfContent = await this.getPDFContent(instance.moduleMasterId.pdfUrl);
 
-            // Evaluate performance
+            // Update answer progress first
+            const session = await mongoose.startSession();
+            try {
+                await session.withTransaction(async () => {
+                    // Update individual question statuses
+                    for (const answer of answers) {
+                        const isCorrect = currentQuestionSet.questionRefs.find(
+                            ref => ref.questionId.toString() === answer.questionId.toString()
+                        )?.correctAnswer === answer.selectedOption;
+
+                        await ModuleInstance.updateOne(
+                            {
+                                _id: instanceId,
+                                'chapterProgress.chapterIndex': instance.currentState.currentChapterIndex,
+                                'chapterProgress.questionSets.setId': instance.currentState.currentQuestionSetId,
+                                'chapterProgress.questionSets.questions.questionId': answer.questionId
+                            },
+                            {
+                                $set: {
+                                    'chapterProgress.$[chapter].questionSets.$[qset].questions.$[question].status': 'completed',
+                                    'chapterProgress.$[chapter].questionSets.$[qset].questions.$[question].userAnswer': answer.selectedOption,
+                                    'chapterProgress.$[chapter].questionSets.$[qset].questions.$[question].isCorrect': isCorrect,
+                                    'chapterProgress.$[chapter].questionSets.$[qset].questions.$[question].answeredAt': new Date()
+                                }
+                            },
+                            {
+                                arrayFilters: [
+                                    { 'chapter.chapterIndex': instance.currentState.currentChapterIndex },
+                                    { 'qset.setId': instance.currentState.currentQuestionSetId },
+                                    { 'question.questionId': answer.questionId }
+                                ]
+                            }
+                        );
+                    }
+
+                    // Update question set status if all questions are answered
+                    const allQuestionsAnswered = answers.length === currentQuestionSet.questionRefs.length;
+                    if (allQuestionsAnswered) {
+                        await ModuleInstance.updateOne(
+                            {
+                                _id: instanceId,
+                                'chapterProgress.chapterIndex': instance.currentState.currentChapterIndex,
+                                'chapterProgress.questionSets.setId': instance.currentState.currentQuestionSetId
+                            },
+                            {
+                                $set: {
+                                    'chapterProgress.$[chapter].questionSets.$[qset].status': 'completed',
+                                    'chapterProgress.$[chapter].questionSets.$[qset].completedAt': new Date()
+                                }
+                            },
+                            {
+                                arrayFilters: [
+                                    { 'chapter.chapterIndex': instance.currentState.currentChapterIndex },
+                                    { 'qset.setId': instance.currentState.currentQuestionSetId }
+                                ]
+                            }
+                        );
+                    }
+                });
+            } finally {
+                session.endSession();
+            }
+
+            // Get evaluation results
             const evaluation = await this.evaluatePerformance(
                 instance,
                 currentChapter,
@@ -401,65 +442,34 @@ class ModuleService {
                 preferredLanguage
             );
 
-            // Update current set progress with answers
-            const chapterProgress = instance.chapterProgress[instance.currentState.currentChapterIndex];
-            if (!chapterProgress) {
-                throw new AppError('Chapter progress not found', 404);
-            }
+            console.log('Evaluation results:', {
+                score: evaluation.score,
+                recommendedLevel: evaluation.recommendedLevel,
+                adaptationType: evaluation.adaptationType,
+                currentChapterIndex: instance.currentState.currentChapterIndex,
+                totalChapters: instance.moduleMasterId.chapters.length
+            });
 
-            const currentSetProgress = chapterProgress.questionSets.find(qs =>
-                qs.setId.toString() === instance.currentState.currentQuestionSetId.toString()
-            );
-            if (!currentSetProgress) {
-                throw new AppError('Question set progress not found', 404);
-            }
-
-            // Update answer progress
-            for (const answer of answers) {
-                const questionProgress = currentSetProgress.questions.find(q =>
-                    q.questionId.toString() === answer.questionId.toString()
-                );
-                if (questionProgress) {
-                    questionProgress.status = 'completed';
-                    questionProgress.userAnswer = answer.selectedOption;
-                    questionProgress.isCorrect = currentQuestionSet.questionRefs.find(
-                        ref => ref.questionId.toString() === answer.questionId.toString()
-                    )?.correctAnswer === answer.selectedOption;
-                    questionProgress.answeredAt = new Date();
-                }
-            }
-
-            // Check progression conditions
+            // Check for chapter progression
             const isLastChapter = instance.currentState.currentChapterIndex === instance.moduleMasterId.chapters.length - 1;
-            const hasHighestBloomLevel = evaluation.strengths.some(s => s.bloomLevel === 6);
-            const currentBloomLevel = Math.max(...evaluation.strengths.map(s => s.bloomLevel), 0);
+            const isReadyForNextChapter = evaluation.adaptationType === 'chapter_progress' && !isLastChapter;
 
-            const isChapterMastered =
-                evaluation.score >= 85 &&
-                hasHighestBloomLevel &&
-                evaluation.weakAreas.length === 0;
-
-            const shouldProgressBloomLevel =
-                evaluation.score >= 85 &&
-                evaluation.weakAreas.length === 0 &&
-                !hasHighestBloomLevel;
-
-            // Handle chapter progression
-            if (isChapterMastered && !isLastChapter) {
+            if (isReadyForNextChapter) {
+                console.log('Initiating chapter progression');
                 const nextChapterIndex = instance.currentState.currentChapterIndex + 1;
                 const nextChapter = instance.moduleMasterId.chapters[nextChapterIndex];
 
-                // Generate content for next chapter if needed
-                if (!nextChapter.levels || nextChapter.levels.length === 0) {
-                    await this.generateChapterContent(
-                        instance.moduleMasterId._id,
-                        nextChapter._id,
-                        instance.userId,
-                        preferredLanguage
-                    );
-                }
+                // Mark current chapter as completed first
+                await ModuleInstance.updateOne(
+                    { _id: instanceId },
+                    {
+                        $set: {
+                            [`chapterProgress.${instance.currentState.currentChapterIndex}.status`]: 'completed'
+                        }
+                    }
+                );
 
-                // Generate initial question set for next chapter
+                // Generate initial questions for next chapter
                 const questionDistribution = [
                     { level: 1, count: 2 },
                     { level: 2, count: 2 },
@@ -469,30 +479,30 @@ class ModuleService {
                     { level: 6, count: 1 }
                 ];
 
-                const newQuestionRefs = await this.generateQuestions(
-                    instance.moduleMasterId,
-                    nextChapter,
-                    questionDistribution
-                );
+                // Get all available questions from next chapter
+                const availableQuestions = nextChapter.levels.reduce((acc, level) => {
+                    acc.push(...level.questions.map(q => ({
+                        questionId: q._id,
+                        bloomLevel: level.bloomLevel,
+                        targetedConcept: q.targetedConcept
+                    })));
+                    return acc;
+                }, []);
 
+                // Create new question set
                 const newQuestionSet = {
                     _id: new mongoose.Types.ObjectId(),
                     setNumber: 1,
                     type: 'initial',
-                    questionRefs: newQuestionRefs,
+                    questionRefs: this.distributeQuestions(availableQuestions, questionDistribution),
                     bloomLevelDistribution: questionDistribution.reduce((acc, item) => {
                         acc[`level${item.level}`] = item.count;
                         return acc;
-                    }, {}),
-                    adaptationMetadata: {
-                        learningProgression: 'Starting new chapter',
-                        recommendedStudyOrder: [],
-                        targetedWeakAreas: []
-                    }
+                    }, {})
                 };
 
-                // Save new question set
-                await ModuleMaster.findOneAndUpdate(
+                // Add question set to next chapter
+                await ModuleMaster.updateOne(
                     {
                         _id: instance.moduleMasterId._id,
                         'chapters._id': nextChapter._id
@@ -504,50 +514,37 @@ class ModuleService {
                     }
                 );
 
-                // Update instance for new chapter
-                await ModuleInstance.findByIdAndUpdate(instanceId, {
-                    'currentState.currentChapterIndex': nextChapterIndex,
-                    'currentState.currentLevelIndex': 0,
-                    'currentState.lastAssessmentLevel': 1,
-                    'currentState.currentQuestionSetId': newQuestionSet._id,
-                    [`chapterProgress.${instance.currentState.currentChapterIndex}.status`]: 'completed',
-                    $push: {
-                        chapterProgress: {
-                            chapterIndex: nextChapterIndex,
-                            status: 'in_progress',
-                            questionSets: [{
-                                setId: newQuestionSet._id,
-                                setNumber: 1,
-                                type: 'initial',
-                                questions: newQuestionRefs.map(ref => ({
-                                    questionId: ref.questionId,
-                                    status: 'pending'
-                                }))
-                            }]
+                // Create new chapter progress
+                const newChapterProgress = {
+                    chapterIndex: nextChapterIndex,
+                    status: 'in_progress',
+                    questionSets: [{
+                        setId: newQuestionSet._id,
+                        setNumber: 1,
+                        type: 'initial',
+                        status: 'not_started',
+                        questions: newQuestionSet.questionRefs.map(ref => ({
+                            questionId: ref.questionId,
+                            status: 'pending'
+                        }))
+                    }]
+                };
+
+                // Update instance state
+                await ModuleInstance.updateOne(
+                    { _id: instanceId },
+                    {
+                        $set: {
+                            'currentState.currentChapterIndex': nextChapterIndex,
+                            'currentState.currentLevelIndex': 0,
+                            'currentState.lastAssessmentLevel': 1,
+                            'currentState.currentQuestionSetId': newQuestionSet._id,
                         },
-                        adaptiveHistory: {
-                            timestamp: new Date(),
-                            previousLevel: currentBloomLevel,
-                            newLevel: 1,
-                            assessmentScore: evaluation.score,
-                            understandingAnalysis: {
-                                weakAreas: [],
-                                strengths: evaluation.strengths
-                            },
-                            adaptationDetails: {
-                                adaptationType: 'progress_chapter',
-                                focusAreas: [],
-                                recommendedApproach: 'Starting new chapter with foundational concepts',
-                                targetBloomLevels: questionDistribution.map(dist => ({
-                                    level: dist.level,
-                                    percentage: (dist.count / 10) * 100
-                                }))
-                            },
-                            newQuestionSetId: newQuestionSet._id,
-                            newFlashcardIds: []
+                        $push: {
+                            chapterProgress: newChapterProgress
                         }
                     }
-                });
+                );
 
                 return {
                     evaluation: {
@@ -561,27 +558,17 @@ class ModuleService {
                     adaptiveContent: {
                         questionSetId: newQuestionSet._id,
                         type: 'initial',
-                        questionRefs: newQuestionRefs,
+                        questions: newQuestionSet.questionRefs,
                         flashcardIds: []
                     }
                 };
-            }
-
-            // Handle Bloom level progression or adaptation
-            if (shouldProgressBloomLevel || evaluation.needsAdaptation) {
+            } else {
+                // Generate adaptive content for current chapter
+                console.log('Generating adaptive content');
                 const adaptiveContent = await this.generateAdaptiveContent(
                     instance,
                     currentChapter,
-                    {
-                        ...evaluation,
-                        needsAdaptation: true,
-                        adaptationStrategy: {
-                            ...evaluation.adaptationStrategy,
-                            recommendedApproach: shouldProgressBloomLevel ?
-                                'Progress to higher Bloom\'s level due to mastery' :
-                                evaluation.adaptationStrategy.recommendedApproach
-                        }
-                    },
+                    evaluation,
                     pdfContent,
                     preferredLanguage
                 );
@@ -595,11 +582,16 @@ class ModuleService {
                         acc[`level${item.bloomLevel}`] = item.count;
                         return acc;
                     }, {}),
-                    adaptationMetadata: adaptiveContent.adaptationMetadata
+                    adaptationMetadata: {
+                        ...adaptiveContent.adaptationMetadata,
+                        adaptationType: evaluation.adaptationType,
+                        previousScore: evaluation.score,
+                        recommendedLevel: evaluation.recommendedLevel
+                    }
                 };
 
                 // Save new content
-                await ModuleMaster.findOneAndUpdate(
+                await ModuleMaster.updateOne(
                     {
                         _id: instance.moduleMasterId._id,
                         'chapters._id': currentChapter._id
@@ -625,24 +617,52 @@ class ModuleService {
                     adaptiveContent: {
                         questionSetId: newQuestionSet._id,
                         type: 'adaptive',
-                        questionRefs: adaptiveContent.questionRefs,
+                        questions: adaptiveContent.questionRefs,
                         flashcardIds: adaptiveContent.newFlashcards.map(f => f._id)
                     }
                 };
             }
-
-            // If no adaptation needed, just update progress
-            await this.updateInstanceProgress(instance, evaluation);
-
-            return {
-                evaluation,
-                adaptiveContent: null
-            };
-
         } catch (error) {
             console.error('Error in evaluateAndAdapt:', error);
             throw new AppError('Failed to evaluate and adapt: ' + error.message, 500);
         }
+    }
+
+    // Helper method to distribute questions
+    distributeQuestions(availableQuestions, distribution) {
+        const selectedQuestions = [];
+        let remainingSlots = 10;
+
+        // First try to fulfill the distribution
+        for (const { level, count } of distribution) {
+            const levelQuestions = availableQuestions.filter(q => q.bloomLevel === level);
+            const available = Math.min(count, levelQuestions.length);
+
+            if (available > 0) {
+                const selectedForLevel = levelQuestions
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, available);
+
+                selectedQuestions.push(...selectedForLevel);
+                remainingSlots -= available;
+            }
+        }
+
+        // Fill remaining slots with random questions
+        if (remainingSlots > 0) {
+            const unusedQuestions = availableQuestions.filter(q =>
+                !selectedQuestions.some(selected => selected.questionId.equals(q.questionId))
+            );
+
+            if (unusedQuestions.length > 0) {
+                const additional = unusedQuestions
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, remainingSlots);
+                selectedQuestions.push(...additional);
+            }
+        }
+
+        return selectedQuestions;
     }
 
     async getNextQuestions(instanceId) {
@@ -928,7 +948,7 @@ class ModuleService {
         try {
             let selectedQuestions = [];
 
-            // Get all questions from the chapter's levels
+            // Group questions by Bloom's level
             const allQuestionsByLevel = chapter.levels.reduce((acc, level) => {
                 if (!acc[level.bloomLevel]) {
                     acc[level.bloomLevel] = [];
@@ -941,25 +961,68 @@ class ModuleService {
                 return acc;
             }, {});
 
-            // Select questions based on distribution
-            for (const { level, count } of distribution) {
-                const availableQuestions = allQuestionsByLevel[level] || [];
-                const shuffled = [...availableQuestions].sort(() => Math.random() - 0.5);
-                selectedQuestions = [...selectedQuestions, ...shuffled.slice(0, count)];
+            // Validate available questions per level and adjust distribution if needed
+            const adjustedDistribution = distribution.map(({ level, count }) => {
+                const availableCount = (allQuestionsByLevel[level] || []).length;
+                if (availableCount < count) {
+                    console.warn(`Warning: Level ${level} has only ${availableCount} questions available, requested ${count}`);
+                    return {
+                        level,
+                        count: availableCount,
+                        deficit: count - availableCount
+                    };
+                }
+                return { level, count, deficit: 0 };
+            });
+
+            // Calculate total deficit and redistribute
+            const totalDeficit = adjustedDistribution.reduce((sum, item) => sum + item.deficit, 0);
+            if (totalDeficit > 0) {
+                // Find levels with excess capacity
+                const levelsWithExcess = adjustedDistribution.filter(item => {
+                    const available = (allQuestionsByLevel[item.level] || []).length;
+                    return available > item.count;
+                });
+
+                // Redistribute deficit across levels with capacity
+                if (levelsWithExcess.length > 0) {
+                    const deficitPerLevel = Math.ceil(totalDeficit / levelsWithExcess.length);
+                    levelsWithExcess.forEach(item => {
+                        const available = (allQuestionsByLevel[item.level] || []).length;
+                        const additional = Math.min(
+                            deficitPerLevel,
+                            available - item.count,
+                            totalDeficit
+                        );
+                        item.count += additional;
+                    });
+                }
             }
 
-            // If we don't have enough questions, fill with random ones
-            const remainingCount = 10 - selectedQuestions.length;
-            if (remainingCount > 0) {
+            // Select questions based on adjusted distribution
+            for (const { level, count } of adjustedDistribution) {
+                const availableQuestions = allQuestionsByLevel[level] || [];
+                if (availableQuestions.length > 0) {
+                    const shuffled = [...availableQuestions].sort(() => Math.random() - 0.5);
+                    selectedQuestions = [...selectedQuestions, ...shuffled.slice(0, count)];
+                }
+            }
+
+            // Ensure we have exactly 10 questions
+            const finalCount = selectedQuestions.length;
+            if (finalCount < 10) {
+                // If we don't have enough questions, fill with questions from any level
                 const allQuestions = Object.values(allQuestionsByLevel).flat();
                 const usedIds = new Set(selectedQuestions.map(q => q.questionId.toString()));
                 const remainingQuestions = allQuestions.filter(q => !usedIds.has(q.questionId.toString()));
-
                 const shuffledRemaining = [...remainingQuestions].sort(() => Math.random() - 0.5);
-                selectedQuestions = [...selectedQuestions, ...shuffledRemaining.slice(0, remainingCount)];
+                selectedQuestions = [...selectedQuestions, ...shuffledRemaining.slice(0, 10 - finalCount)];
+            } else if (finalCount > 10) {
+                // If we have too many questions, trim to exactly 10
+                selectedQuestions = selectedQuestions.slice(0, 10);
             }
 
-            return selectedQuestions.slice(0, 10);
+            return selectedQuestions;
         } catch (error) {
             console.error('Error generating questions:', error);
             throw new AppError('Failed to generate questions: ' + error.message, 500);
@@ -1115,6 +1178,22 @@ class ModuleService {
             // Calculate score
             const score = Math.round((correctCount / questionCount) * 100);
 
+            // Analyze performance by Bloom's level
+            const performanceByLevel = {};
+            detailedAnswers.forEach(answer => {
+                if (!performanceByLevel[answer.bloomLevel]) {
+                    performanceByLevel[answer.bloomLevel] = {
+                        total: 0,
+                        correct: 0,
+                        concepts: new Set()
+                    };
+                }
+                const levelStats = performanceByLevel[answer.bloomLevel];
+                levelStats.total++;
+                if (answer.isCorrect) levelStats.correct++;
+                levelStats.concepts.add(answer.targetedConcept);
+            });
+
             // Prepare evaluation prompt
             let prompt = EVALUATION_PROMPT
                 .replace('{currentLevel}', currentLevel)
@@ -1132,14 +1211,12 @@ class ModuleService {
                 ${prompt}
             `;
 
-            // Get AI evaluation
+            // Get AI evaluation for strengths and weaknesses
             const evaluationResult = await this.model.generateContent({
                 contents: [{
                     role: 'user',
                     parts: [
-                        {
-                            text: prompt
-                        },
+                        { text: prompt },
                         {
                             inlineData: {
                                 mimeType: "application/pdf",
@@ -1151,29 +1228,43 @@ class ModuleService {
             });
 
             // Process AI response
-            const evaluation = processAIResponse(evaluationResult.response.text(), 'evaluation');
+            const aiEvaluation = processAIResponse(evaluationResult.response.text(), 'evaluation');
 
-            // Analyze performance by Bloom's level
-            const performanceByLevel = {};
-            detailedAnswers.forEach(answer => {
-                if (!performanceByLevel[answer.bloomLevel]) {
-                    performanceByLevel[answer.bloomLevel] = {
-                        total: 0,
-                        correct: 0,
-                        concepts: new Set()
-                    };
+            // Determine adaptation type and recommended level
+            let adaptationType = null;
+            let recommendedLevel = currentLevel;
+
+            // Always adapt, but determine how:
+            if (score >= 85) {
+                if (currentLevel < 6 && aiEvaluation.weakAreas.length === 0) {
+                    // High performance, adapt upward
+                    adaptationType = 'level_up';
+                    recommendedLevel = Math.min(6, currentLevel + 1);
+                } else if (currentLevel === 6 && aiEvaluation.weakAreas.length === 0) {
+                    // At highest level with perfect performance
+                    adaptationType = 'chapter_progress';
+                    recommendedLevel = 6;
+                } else {
+                    // Good performance but has weak areas, lateral adaptation
+                    adaptationType = 'reinforce';
+                    recommendedLevel = currentLevel;
                 }
-                const levelStats = performanceByLevel[answer.bloomLevel];
-                levelStats.total++;
-                if (answer.isCorrect) levelStats.correct++;
-                levelStats.concepts.add(answer.targetedConcept);
-            });
+            } else if (score >= 70) {
+                // Decent performance, lateral adaptation
+                adaptationType = 'reinforce';
+                recommendedLevel = currentLevel;
+            } else {
+                // Poor performance, adapt downward
+                adaptationType = 'remedial';
+                if (score < 50 && currentLevel > 1) {
+                    recommendedLevel = currentLevel - 1;
+                }
+            }
 
-            // Calculate recommended level based on performance
-            const recommendedLevel = this.calculateRecommendedLevel(
+            // Calculate question distribution based on performance and adaptationType
+            const questionDistribution = this.calculateQuestionDistribution(
                 score,
-                currentLevel,
-                evaluation.recommendedLevel,
+                recommendedLevel,
                 performanceByLevel
             );
 
@@ -1181,19 +1272,14 @@ class ModuleService {
             return {
                 score,
                 recommendedLevel,
-                needsAdaptation: score < 70,
-                weakAreas: evaluation.weakAreas || [],
-                strengths: evaluation.strengths || [],
+                needsAdaptation: true, // Always adapt with new questions
+                adaptationType,
+                weakAreas: aiEvaluation.weakAreas || [],
+                strengths: aiEvaluation.strengths || [],
                 adaptationStrategy: {
-                    focusAreas: evaluation.adaptationStrategy?.focusAreas ||
-                        evaluation.weakAreas?.map(area => area.topic) || [],
-                    recommendedApproach: evaluation.adaptationStrategy?.recommendedApproach ||
-                        'Review and reinforce fundamental concepts',
-                    questionDistribution: this.calculateQuestionDistribution(
-                        score,
-                        recommendedLevel,
-                        performanceByLevel
-                    )
+                    focusAreas: aiEvaluation.weakAreas?.map(area => area.topic) || [],
+                    recommendedApproach: this.getAdaptationApproach(adaptationType, score),
+                    questionDistribution
                 },
                 performanceAnalysis: {
                     byLevel: Object.entries(performanceByLevel).reduce((acc, [level, stats]) => {
@@ -1212,6 +1298,24 @@ class ModuleService {
         } catch (error) {
             console.error('Error in evaluatePerformance:', error);
             throw new AppError('Failed to evaluate performance: ' + error.message, 500);
+        }
+    }
+
+    // Helper method to get adaptation approach
+    getAdaptationApproach(adaptationType, score) {
+        switch (adaptationType) {
+            case 'level_up':
+                return 'Progress to higher cognitive complexity with new questions';
+            case 'chapter_progress':
+                return 'Ready for next chapter';
+            case 'reinforce':
+                return score >= 85
+                    ? 'Maintain current level with new challenging questions'
+                    : 'Reinforce current level concepts with new questions';
+            case 'remedial':
+                return 'Review and strengthen fundamental concepts with new questions';
+            default:
+                return 'Continue with standard progression';
         }
     }
 
