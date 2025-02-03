@@ -136,137 +136,82 @@ Example:
 
 
 const EVALUATION_PROMPT = JSON_FORMAT_RULES + `
-Analyze the student's assessment performance in detail. You are evaluating their understanding of the material
-and determining if they need a new adapted question set.
+Analyze the student's assessment performance and determine if they should progress.
 
 Assessment Context:
 - Current Bloom's Level: {currentLevel}
-- Current Difficulty Level: {currentDifficultyLevel}
 - Total Questions Attempted: {questionCount}
 - Correct Answers: {correctCount}
 - Detailed Answers: {answers}
-- Attempted Sets Count: {attemptedSetsCount}
-- Last Set Score: {lastSetScore}
-- Attempts At New Level: {attemptsAtNewLevel}
-- Recently Increased Difficulty : {recentlyIncreasedDifficulty}
-- Consistent Performance : {consistentPerformance}
-- Concept Mastery At Current Level : {conceptMasteryAtCurrentLevel}
-- Bloom Mastery Levels 1-2: {bloomMastery_1_2}
-- Bloom Mastery Levels 3-4: {bloomMastery_3_4}
-- Bloom Mastery Levels 5-6: {bloomMastery_5_6}
+- Performance By Level: {performanceByLevel}
+- Previous Sets Performance: {previousSets}
 
-Evaluation Requirements:
-1. Calculate comprehension score (0-100) based on:
-   - Correct answers percentage
-   - Question difficulty levels
-   - Answer patterns within each Bloom's level
+Progression Rules:
+1. Chapter Progression:
+   - Current level must be 6
+   - Score must be >= 80%
 
-2. Analyze learning progression:
-   - Compare performance across different Bloom's levels
-   - Identify concepts that need reinforcement
-   - Evaluate readiness for level progression
-
-3. Identify specific knowledge gaps:
-   - List specific topics where errors occurred
-   - Group related misconceptions
-   - Note patterns in incorrect answers
-
-4. Determine mastery and adaptation needs based on the following logic:
-
-   - **Chapter Progression:** If ALL the following conditions are true, then:
-        - Set 'recommendedLevel' to {currentLevel + 1} (increase the level by one).
-        - Set 'needsAdaptation' to true.
-        - The conditions are:
-            - Score is greater than or equal to 80.
-            - Current Difficulty Level is greater than or equal to 4.
-            - Attempted Sets Count is greater than or equal to 3.
-            - Bloom Mastery Levels 1-2 is greater than or equal to 85%.
-            - Bloom Mastery Levels 3-4 is greater than or equal to 80%.
-            - Bloom Mastery Levels 5-6 is greater than or equal to 75%.
-            - Consistent Performance is true (last 2 sets above 75%).
-
-   - **Harder Adaptation:** If ANY of the following conditions are true, then:
-       - Set 'needsAdaptation' to true.
-     - If Score >= 85, Current Difficulty Level < 5, and Last Set Score >= 80, then increase difficulty.
-     - If Score >= 80, Current Bloom Level < 6, and Concept Mastery At Current Level >= 80, then increase the bloom level.
-
-    - **Maintain Level:** If ANY of the following conditions are true, then:
-          - Set 'needsAdaptation' to false.
-      - If Score is between 70 and 84, Current Difficulty Level is greater than or equal to 3, and Consistent Performance is true.
-      - If Score is greater than or equal to 75, Recently Increased Difficulty is true, and Attempts At New Level is less than 2.
-
-    - **Easier Adaptation:** If ANY of the following conditions are true, then:
-        - Set 'needsAdaptation' to true.
-        - If Score < 60 and Attempts At Current Level >= 2, decrease the difficulty.
-        - If Score < 50 and Current Difficulty Level > 1, immediately decrease the difficulty.
-
-    - If none of the above conditions for chapter progression were met, then:
-       - Set 'recommendedLevel' to the current level.
-       - If 'needsAdaptation' was not already set to true, then set 'needsAdaptation' to false.
-
+2. Level Changes:
+   - If score < 50%: Move down one level
+   - If score >= 85% and not at level 6: Move up one level
+   - Otherwise: Stay at current level
 
 Return response in JSON format:
 {
   "score": number (0-100),
   "recommendedLevel": number (1-6),
   "needsAdaptation": boolean,
-  "weakAreas": [
-    {
-      "topic": "string (specific topic/concept)",
-      "bloomLevel": number (1-6),
-      "detectedIssues": ["string (specific misconceptions)"],
-      "recommendedFocus": "string (what to focus on)"
-    }
-  ],
-  "strengths": [
-    {
-      "topic": "string (mastered topic/concept)",
-      "bloomLevel": number (1-6),
-      "demonstratedSkills": ["string (specific skills shown)"]
-    }
-  ],
+  "adaptationType": "level_up" | "level_down" | "reinforce" | "chapter_progress",
+  "weakAreas": [{
+    "topic": "string",
+    "bloomLevel": number,
+    "detectedIssues": ["string"],
+    "recommendedFocus": "string"
+  }],
+  "strengths": [{
+    "topic": "string",
+    "bloomLevel": number,
+    "demonstratedSkills": ["string"]
+  }],
   "adaptationStrategy": {
-    "focusAreas": ["string (specific topics to target)"],
-    "recommendedApproach": "string (detailed learning strategy)",
-    "questionDistribution": [
-      {
-        "bloomLevel": number (1-6),
-        "count": number (questions to generate at this level),
-        "topics": ["string (topics to cover)"]
-      }
-    ]
+    "focusAreas": ["string"],
+    "recommendedApproach": "string",
+    "questionDistribution": [{
+      "bloomLevel": number,
+      "count": number,
+      "topics": ["string"],
+      "reasoning": "string"
+    }]
   }
 }
 `;
 
 const ADAPTIVE_CONTENT_PROMPT = JSON_FORMAT_RULES + `
-Generate a new complete assessment set based on the evaluation results. The set must include exactly 10 questions
-and targeted flashcards for reinforcement.
+Generate a new assessment set following the provided distribution exactly.
 
-Adaptation Context:
+Context:
 - Target Bloom's Level: {targetLevel}
 - Focus Areas: {focusAreas}
 - Weak Concepts: {weakConcepts}
 - Current Chapter: {chapterTitle}
+- Required Question Distribution: {questionDistribution}
 
-Requirements for Question Generation:
-1. Generate exactly 10 questions that:
-   - Target identified weak areas
-   - Follow the recommended level distribution
-   - Provide scaffolded learning progression
-   - Include detailed explanations
+Requirements:
+1. Follow the provided question distribution exactly:
+   {questionDistribution}
+   - Generate exactly the specified number of questions for each level
+   - Total must be exactly 10 questions
+   - Each question's bloomLevel must match the distribution
 
 2. Each question must:
-   - Address specific misconceptions
+   - Match the specified Bloom's level exactly
    - Include clear learning objectives
    - Provide comprehensive explanations
-   - Follow multiple-choice format
+   - Follow multiple-choice format with 4 options
 
-3. Generate targeted flashcards that:
-   - Focus on weak areas
-   - Provide foundational knowledge
-   - Include practice exercises
-   - Support concept mastery
+3. Generate supporting flashcards that:
+   - Match the concepts from questions
+   - Support mastery of key topics
 
 Return response in JSON format:
 {
@@ -275,7 +220,7 @@ Return response in JSON format:
     "options": ["string (4 options)"],
     "correctAnswer": number (0-3),
     "explanation": "string (detailed explanation including why other options are incorrect)",
-    "bloomLevel": number (1-6),
+    "bloomLevel": number (MUST match distribution),
     "targetedConcept": "string (specific concept being tested)",
     "learningObjective": "string (what this question aims to assess)"
   }],
@@ -290,7 +235,16 @@ Return response in JSON format:
   "adaptationMetadata": {
     "targetedWeakAreas": ["string (areas being addressed)"],
     "learningProgression": "string (how this set builds understanding)",
-    "recommendedStudyOrder": ["string (ordered concepts)"]
+    "recommendedStudyOrder": ["string (ordered concepts)"],
+    "distributionFollowed": boolean (must be true),
+    "bloomLevelCounts": {
+      "level1": number,
+      "level2": number,
+      "level3": number,
+      "level4": number,
+      "level5": number,
+      "level6": number
+    }
   }
 }
 `;
