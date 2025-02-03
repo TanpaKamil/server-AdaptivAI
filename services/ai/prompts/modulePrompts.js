@@ -156,6 +156,13 @@ Progression Rules:
    - If score >= 85% and not at level 6: Move up one level
    - Otherwise: Stay at current level
 
+3. Performance Analysis Requirements:
+   - Identify concepts with performance >= 80% as strengths
+   - Identify concepts with performance < 70% as weak areas
+   - Track specific skills demonstrated in correct answers
+   - Note specific issues in incorrect answers
+   - Provide focused recommendations for improvement
+
 Return response in JSON format:
 {
   "score": number (0-100),
@@ -163,15 +170,15 @@ Return response in JSON format:
   "needsAdaptation": boolean,
   "adaptationType": "level_up" | "level_down" | "reinforce" | "chapter_progress",
   "weakAreas": [{
-    "topic": "string",
-    "bloomLevel": number,
-    "detectedIssues": ["string"],
-    "recommendedFocus": "string"
+    "topic": "string (specific concept)",
+    "bloomLevel": number (level where issue occurred),
+    "detectedIssues": ["string (specific performance issues)"],
+    "recommendedFocus": "string (specific improvement strategy)"
   }],
   "strengths": [{
-    "topic": "string",
-    "bloomLevel": number,
-    "demonstratedSkills": ["string"]
+    "topic": "string (specific concept)",
+    "bloomLevel": number (highest level demonstrated),
+    "demonstratedSkills": ["string (specific abilities shown)"]
   }],
   "adaptationStrategy": {
     "focusAreas": ["string"],
@@ -200,7 +207,7 @@ Requirements:
 1. Follow the provided question distribution exactly:
    {questionDistribution}
    - Generate exactly the specified number of questions for each level
-   - Total must be exactly 10 questions
+   - Total must be exactly 10 questions (non-negotiable)
    - Each question's bloomLevel must match the distribution
 
 2. Each question must:

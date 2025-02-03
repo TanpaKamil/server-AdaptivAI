@@ -248,24 +248,39 @@ class ModuleController {
         preferredLanguage
       );
 
-      res.status(200).json({
-        status: 'success',
-        data: {
-          evaluation: {
-            score: result.evaluation.score,
-            recommendedLevel: result.evaluation.recommendedLevel,
-            needsAdaptation: result.evaluation.needsAdaptation,
-            strengths: result.evaluation.strengths,
-            weakAreas: result.evaluation.weakAreas
-          },
-          adaptiveContent: result.adaptiveContent ? {
-            setId: result.adaptiveContent.questionSetId,
-            type: result.adaptiveContent.type,
-            questions: result.adaptiveContent.questions,
-            flashcardIds: result.adaptiveContent.flashcardIds
-          } : null
-        }
-      });
+      if (result.evaluation.moduleCompleted) {
+        res.status(200).json({
+          status: 'success',
+          data: {
+            moduleCompleted: true,
+            evaluation: {
+              finalScore: result.evaluation.finalScore,
+              completionDate: result.evaluation.completionDate,
+              summary: result.evaluation.summary
+            }
+          }
+        });
+      } else {
+        res.status(200).json({
+          status: 'success',
+          data: {
+            evaluation: {
+              score: result.evaluation.score,
+              recommendedLevel: result.evaluation.recommendedLevel,
+              needsAdaptation: result.evaluation.needsAdaptation,
+              strengths: result.evaluation.strengths,
+              weakAreas: result.evaluation.weakAreas
+            },
+            adaptiveContent: result.adaptiveContent ? {
+              setId: result.adaptiveContent.questionSetId,
+              type: result.adaptiveContent.type,
+              questions: result.adaptiveContent.questions,
+              flashcardIds: result.adaptiveContent.flashcardIds
+            } : null
+          }
+        });
+      }
+
     } catch (error) {
       console.error('Error in submitAssessment:', error);
       throw new AppError(error.message || 'Error submitting assessment', 500);

@@ -525,7 +525,37 @@ class ModuleService {
             });
 
             if (isReadyForNextChapter) {
-                console.log('\n🎯 Initiating chapter progression');
+                if (isLastChapter) {
+                    console.log('\n🎉 Module completion detected!');
+                    // Mark current chapter as completed
+                    await ModuleInstance.updateOne(
+                        { _id: instanceId },
+                        {
+                            $set: {
+                                [`chapterProgress.${instance.currentState.currentChapterIndex}.status`]: 'completed',
+                                status: 'completed',
+                                completedAt: new Date()
+                            }
+                        }
+                    );
+
+                    return {
+                        evaluation: {
+                            ...evaluation,
+                            moduleCompleted: true,
+                            finalScore: instance.currentState.comprehensionScore,
+                            completionDate: new Date(),
+                            summary: {
+                                totalChapters: instance.moduleMasterId.chapters.length,
+                                averageScore: evaluation.score,
+                                timeSpent: new Date() - instance.startedAt,
+                                masteredConcepts: evaluation.strengths.map(s => s.topic),
+                                finalLevel: evaluation.recommendedLevel
+                            }
+                        }
+                    };
+                } else
+                    console.log('\n🎯 Initiating chapter progression');
                 const nextChapterIndex = instance.currentState.currentChapterIndex + 1;
                 const nextChapter = instance.moduleMasterId.chapters[nextChapterIndex];
 
@@ -584,100 +614,91 @@ class ModuleService {
 
     // Helper method to handle adaptive content generation and updates
     async handleAdaptiveContent(instance, currentChapter, evaluation, pdfContent, preferredLanguage) {
-        console.log('Generating adaptive content');
-        const adaptiveContent = await this.generateAdaptiveContent(
-            instance,
-            currentChapter,
-            evaluation,
-            pdfContent,
-            preferredLanguage
-        );
-
-        const newQuestionSet = {
-            _id: new mongoose.Types.ObjectId(),
-            setNumber: currentChapter.questionSets.length + 1,
-            type: 'adaptive',
-            questionRefs: adaptiveContent.questionRefs,
-            bloomLevelDistribution: evaluation.adaptationStrategy.questionDistribution.reduce((acc, item) => {
-                acc[`level${item.bloomLevel}`] = item.count;
-                return acc;
-            }, {}),
-            adaptationMetadata: {
-                ...adaptiveContent.adaptationMetadata,
-                adaptationType: evaluation.adaptationType,
-                previousScore: evaluation.score,
-                recommendedLevel: evaluation.recommendedLevel
-            }
-        };
-
-        // Save new content
-        await ModuleMaster.updateOne(
-            {
-                _id: instance.moduleMasterId._id,
-                'chapters._id': currentChapter._id
-            },
-            {
-                $push: {
-                    'chapters.$.questionSets': newQuestionSet,
-                    'chapters.$.summaries': adaptiveContent.newFlashcards
-                }
-            }
-        );
-
-        // Update instance progress
-        await this.updateInstanceProgress(
-            instance,
-            evaluation,
-            newQuestionSet,
-            adaptiveContent
-        );
-
-        return {
-            evaluation,
-            adaptiveContent: {
-                questionSetId: newQuestionSet._id,
-                type: 'adaptive',
-                questions: adaptiveContent.questionRefs,
-                flashcardIds: adaptiveContent.newFlashcards.map(f => f._id)
-            }
-        };
-    }
-
-    // Helper method to distribute questions
-    distributeQuestions(availableQuestions, distribution) {
-        const selectedQuestions = [];
-        let remainingSlots = 10;
-
-        // First try to fulfill the distribution
-        for (const { level, count } of distribution) {
-            const levelQuestions = availableQuestions.filter(q => q.bloomLevel === level);
-            const available = Math.min(count, levelQuestions.length);
-
-            if (available > 0) {
-                const selectedForLevel = levelQuestions
-                    .sort(() => Math.random() - 0.5)
-                    .slice(0, available);
-
-                selectedQuestions.push(...selectedForLevel);
-                remainingSlots -= available;
-            }
-        }
-
-        // Fill remaining slots with random questions
-        if (remainingSlots > 0) {
-            const unusedQuestions = availableQuestions.filter(q =>
-                !selectedQuestions.some(selected => selected.questionId.equals(q.questionId))
+        try {
+            console.log('\nGenerating adaptive content');
+            const adaptiveContent = await this.generateAdaptiveContent(
+                instance,
+                currentChapter,
+                evaluation,
+                pdfContent,
+                preferredLanguage
             );
 
-            if (unusedQuestions.length > 0) {
-                const additional = unusedQuestions
-                    .sort(() => Math.random() - 0.5)
-                    .slice(0, remainingSlots);
-                selectedQuestions.push(...additional);
-            }
-        }
+            // Create new question set
+            const newQuestionSet = {
+                _id: new mongoose.Types.ObjectId(),
+                setNumber: currentChapter.questionSets.length + 1,
+                type: 'adaptive',
+                questionRefs: adaptiveContent.questionRefs,
+                bloomLevelDistribution: evaluation.adaptationStrategy.questionDistribution.reduce((acc, item) => {
+                    acc[`level${item.bloomLevel}`] = item.count;
+                    return acc;
+                }, {}),
+                adaptationMetadata: {
+                    ...adaptiveContent.adaptationMetadata,
+                    adaptationType: evaluation.adaptationType,
+                    previousScore: evaluation.score,
+                    recommendedLevel: evaluation.recommendedLevel
+                }
+            };
 
-        return selectedQuestions;
+            // Validate question set
+            if (!newQuestionSet.questionRefs || newQuestionSet.questionRefs.length === 0) {
+                throw new AppError('Generated question set is empty', 500);
+            }
+
+            // Save new content
+            await ModuleMaster.updateOne(
+                {
+                    _id: instance.moduleMasterId._id,
+                    'chapters._id': currentChapter._id
+                },
+                {
+                    $push: {
+                        'chapters.$.questionSets': newQuestionSet,
+                        'chapters.$.summaries': adaptiveContent.newFlashcards
+                    }
+                }
+            );
+
+            // Create evaluation object for instance update
+            const progressEvaluation = {
+                score: evaluation.score,
+                recommendedLevel: evaluation.recommendedLevel,
+                weakAreas: evaluation.weakAreas || [],
+                strengths: evaluation.strengths || [],
+                adaptationType: evaluation.adaptationType,
+                adaptationStrategy: evaluation.adaptationStrategy
+            };
+
+            // Update instance progress
+            await this.updateInstanceProgress(
+                instance,
+                progressEvaluation,
+                newQuestionSet,
+                adaptiveContent
+            );
+
+            return {
+                evaluation: {
+                    score: evaluation.score,
+                    recommendedLevel: evaluation.recommendedLevel,
+                    needsAdaptation: evaluation.needsAdaptation,
+                    weakAreas: evaluation.weakAreas || [],
+                    strengths: evaluation.strengths || []
+                },
+                adaptiveContent: {
+                    setId: newQuestionSet._id,
+                    type: 'adaptive',
+                    questions: newQuestionSet.questionRefs,
+                    flashcardIds: adaptiveContent.newFlashcards.map(f => f._id)
+                }
+            };
+
+        } catch (error) {
+            console.error('\nError in handleAdaptiveContent:', error);
+            throw new AppError(`Failed to handle adaptive content: ${error.message}`, 500);
+        }
     }
 
     async getNextQuestions(instanceId) {
@@ -853,29 +874,45 @@ class ModuleService {
 
     async updateInstanceProgress(instance, evaluation, savedQuestionSet = null, adaptiveContent = null) {
         try {
-            // Input validation
+            console.log('\n=== Updating Instance Progress ===');
+
+            // Validate instance
             if (!instance?._id) {
+                console.error('Invalid instance:', { hasId: !!instance?._id });
                 throw new AppError('Invalid instance provided', 400);
             }
 
-            if (!evaluation?.score) {
-                throw new AppError('Invalid evaluation data', 400);
+            // Validate evaluation data
+            if (typeof evaluation?.score !== 'number') {
+                console.error('Invalid evaluation data:', {
+                    hasEvaluation: !!evaluation,
+                    score: evaluation?.score,
+                    scoreType: typeof evaluation?.score
+                });
+                throw new AppError('Invalid evaluation data: score must be a number', 400);
             }
+
+            console.log('Update parameters:', {
+                instanceId: instance._id,
+                score: evaluation.score,
+                recommendedLevel: evaluation.recommendedLevel,
+                hasQuestionSet: !!savedQuestionSet,
+                hasAdaptiveContent: !!adaptiveContent
+            });
 
             // Base update data that's always needed
             const updateData = {
                 $set: {
                     'currentState.comprehensionScore': evaluation.score,
-                    'currentState.lastAssessmentLevel': evaluation.recommendedLevel,
+                    'currentState.lastAssessmentLevel': evaluation.recommendedLevel || instance.currentState.lastAssessmentLevel,
                     lastAccessedAt: new Date(),
                     [`chapterProgress.${instance.currentState.currentChapterIndex}.comprehensionScore`]: evaluation.score
                 }
             };
 
             // Only proceed with adaptive updates if we have a new question set
-            if (savedQuestionSet && savedQuestionSet._id && savedQuestionSet.questionRefs) {
-                // Debug logging
-                console.log('Processing adaptive update with question set:', {
+            if (savedQuestionSet?._id && Array.isArray(savedQuestionSet.questionRefs)) {
+                console.log('\nProcessing adaptive update with question set:', {
                     setId: savedQuestionSet._id.toString(),
                     questionCount: savedQuestionSet.questionRefs.length,
                     type: savedQuestionSet.type || 'adaptive'
@@ -897,7 +934,7 @@ class ModuleService {
                     startedAt: new Date()
                 };
 
-                // Create adaptive history entry if we have evaluation data
+                // Create adaptive history entry
                 const adaptiveHistoryEntry = {
                     timestamp: new Date(),
                     previousLevel: instance.currentState.lastAssessmentLevel,
@@ -925,9 +962,16 @@ class ModuleService {
                     [`chapterProgress.${instance.currentState.currentChapterIndex}.questionSets`]: questionSetProgress,
                     adaptiveHistory: adaptiveHistoryEntry
                 };
+
+                console.log('Question set progress created:', {
+                    setId: questionSetProgress.setId,
+                    questionCount: questionSetProgress.questions.length,
+                    type: questionSetProgress.type
+                });
             }
 
             // Perform the update
+            console.log('\nExecuting instance update...');
             const updatedInstance = await ModuleInstance.findByIdAndUpdate(
                 instance._id,
                 updateData,
@@ -951,10 +995,11 @@ class ModuleService {
                 throw new AppError('Failed to verify instance update', 500);
             }
 
+            console.log('\n✅ Instance progress updated successfully');
             return updatedInstance;
 
         } catch (error) {
-            console.error('Error in updateInstanceProgress:', error);
+            console.error('\n❌ Error in updateInstanceProgress:', error);
             throw new AppError(`Failed to update instance progress: ${error.message}`, 500);
         }
     }
@@ -1162,10 +1207,14 @@ class ModuleService {
 
             console.log('Questions loaded:', questionsMap.size);
 
-            // Calculate performance metrics
+            // Process answers and track performance
             let correctCount = 0;
             const detailedAnswers = [];
             const questionCount = submittedAnswers.length;
+
+            // Track performance by concept and Bloom's level
+            const conceptPerformance = new Map();
+            const levelPerformance = new Map();
 
             // Process each answer
             submittedAnswers.forEach(answer => {
@@ -1178,13 +1227,46 @@ class ModuleService {
                 const isCorrect = question.correctAnswer === answer.selectedOption;
                 if (isCorrect) correctCount++;
 
+                // Track detailed answer
                 detailedAnswers.push({
                     questionId: answer.questionId,
                     isCorrect: isCorrect,
                     bloomLevel: question.bloomLevel,
                     userAnswer: answer.selectedOption,
-                    correctAnswer: question.correctAnswer
+                    correctAnswer: question.correctAnswer,
+                    concept: question.targetedConcept
                 });
+
+                // Track concept performance
+                if (!conceptPerformance.has(question.targetedConcept)) {
+                    conceptPerformance.set(question.targetedConcept, {
+                        correct: 0,
+                        total: 0,
+                        bloomLevels: new Set(),
+                        questions: []
+                    });
+                }
+                const conceptStats = conceptPerformance.get(question.targetedConcept);
+                conceptStats.total++;
+                if (isCorrect) conceptStats.correct++;
+                conceptStats.bloomLevels.add(question.bloomLevel);
+                conceptStats.questions.push({
+                    isCorrect,
+                    bloomLevel: question.bloomLevel
+                });
+
+                // Track Bloom's level performance
+                if (!levelPerformance.has(question.bloomLevel)) {
+                    levelPerformance.set(question.bloomLevel, {
+                        correct: 0,
+                        total: 0,
+                        concepts: new Set()
+                    });
+                }
+                const levelStats = levelPerformance.get(question.bloomLevel);
+                levelStats.total++;
+                if (isCorrect) levelStats.correct++;
+                levelStats.concepts.add(question.targetedConcept);
             });
 
             // Calculate overall score
@@ -1193,6 +1275,46 @@ class ModuleService {
                 totalQuestions: questionCount,
                 correctAnswers: correctCount,
                 score: score + '%'
+            });
+
+            // Analyze strengths and weaknesses
+            const strengths = [];
+            const weakAreas = [];
+
+            conceptPerformance.forEach((stats, concept) => {
+                const conceptScore = (stats.correct / stats.total) * 100;
+                const bloomLevels = Array.from(stats.bloomLevels);
+                const conceptPerformanceDetails = {
+                    accuracy: conceptScore.toFixed(1) + '%',
+                    correctAnswers: stats.correct,
+                    totalQuestions: stats.total,
+                    bloomLevels: Array.from(bloomLevels).sort()
+                };
+
+                if (conceptScore >= 80) {
+                    strengths.push({
+                        topic: concept,
+                        bloomLevel: Math.max(...bloomLevels),
+                        demonstratedSkills: [
+                            `Mastered concept with ${conceptScore.toFixed(1)}% accuracy`,
+                            `Successfully answered ${stats.correct} out of ${stats.total} questions`,
+                            `Demonstrated competency up to Bloom's level ${Math.max(...bloomLevels)}`
+                        ]
+                    });
+                }
+                if (conceptScore < 70) {
+                    weakAreas.push({
+                        topic: concept,
+                        bloomLevel: Math.min(...bloomLevels),
+                        detectedIssues: [
+                            `Performance at ${conceptScore.toFixed(1)}%`,
+                            `Missed ${stats.total - stats.correct} out of ${stats.total} questions`
+                        ],
+                        recommendedFocus: `Focus on strengthening understanding of ${concept} fundamentals and practice application`
+                    });
+                }
+
+                console.log(`Concept Performance - ${concept}:`, conceptPerformanceDetails);
             });
 
             // Simple progression check: Level 6 and score >= 80
@@ -1229,19 +1351,19 @@ class ModuleService {
                 const higherLevel = Math.min(6, recommendedLevel + 1);
 
                 questionDistribution = [
-                    { bloomLevel: lowerLevel, count: 2, topics: ["Foundational concepts"] },
-                    { bloomLevel: recommendedLevel, count: 6, topics: ["Current level concepts"] },
-                    { bloomLevel: higherLevel, count: 2, topics: ["Advanced concepts"] }
+                    { bloomLevel: lowerLevel, count: 2, topics: ["Foundational concepts"], reasoning: "20% easier content" },
+                    { bloomLevel: recommendedLevel, count: 6, topics: ["Current level concepts"], reasoning: "60% current level" },
+                    { bloomLevel: higherLevel, count: 2, topics: ["Advanced concepts"], reasoning: "20% challenging content" }
                 ];
             } else {
                 // Initial distribution for next chapter
                 questionDistribution = [
-                    { bloomLevel: 1, count: 2, topics: ["Basic concepts"] },
-                    { bloomLevel: 2, count: 2, topics: ["Understanding"] },
-                    { bloomLevel: 3, count: 2, topics: ["Application"] },
-                    { bloomLevel: 4, count: 2, topics: ["Analysis"] },
-                    { bloomLevel: 5, count: 1, topics: ["Evaluation"] },
-                    { bloomLevel: 6, count: 1, topics: ["Creation"] }
+                    { bloomLevel: 1, count: 2, topics: ["Basic concepts"], reasoning: "Fundamental knowledge" },
+                    { bloomLevel: 2, count: 2, topics: ["Understanding"], reasoning: "Comprehension" },
+                    { bloomLevel: 3, count: 2, topics: ["Application"], reasoning: "Practical use" },
+                    { bloomLevel: 4, count: 2, topics: ["Analysis"], reasoning: "Breaking down concepts" },
+                    { bloomLevel: 5, count: 1, topics: ["Evaluation"], reasoning: "Critical thinking" },
+                    { bloomLevel: 6, count: 1, topics: ["Creation"], reasoning: "Synthesis" }
                 ];
             }
 
@@ -1252,19 +1374,19 @@ class ModuleService {
                 )
             });
 
-            // Prepare evaluation response
+            // Build evaluation response
             const evaluationResult = {
                 score,
                 recommendedLevel,
                 needsAdaptation: !isReadyForProgression,
                 adaptationType,
-                weakAreas: [], // Simplified - no weak areas tracking
-                strengths: [], // Simplified - no strengths tracking
+                weakAreas,
+                strengths,
                 adaptationStrategy: {
-                    focusAreas: [],
+                    focusAreas: weakAreas.map(w => w.topic),
                     recommendedApproach: isReadyForProgression
                         ? 'Progress to next chapter'
-                        : 'Continue with current level',
+                        : 'Continue with current level focusing on identified weak areas',
                     questionDistribution
                 },
                 performanceAnalysis: {
@@ -1283,7 +1405,9 @@ class ModuleService {
             console.log('Final Recommendation:', {
                 adaptationType,
                 recommendedLevel,
-                needsAdaptation: !isReadyForProgression
+                needsAdaptation: !isReadyForProgression,
+                strengthsIdentified: strengths.length,
+                weakAreasIdentified: weakAreas.length
             });
 
             return evaluationResult;
@@ -1821,21 +1945,6 @@ class ModuleService {
                 totalQuestions: freshChapter.levels?.reduce((sum, level) => sum + level.questions.length, 0) || 0
             });
 
-            // Create initial question set with basic distribution
-            console.log('\n📊 Creating initial question distribution');
-            const baseDistribution = [
-                { level: 1, count: 2, reason: "Foundational knowledge (20%)" },
-                { level: 2, count: 2, reason: "Core understanding (20%)" },
-                { level: 3, count: 2, reason: "Application (20%)" },
-                { level: 4, count: 2, reason: "Analysis (20%)" },
-                { level: 5, count: 1, reason: "Evaluation (10%)" },
-                { level: 6, count: 1, reason: "Creation (10%)" }
-            ];
-
-            console.log('Question distribution plan:', baseDistribution.map(d =>
-                `Level ${d.level}: ${d.count} questions (${d.reason})`
-            ));
-
             // Get available questions from reloaded chapter
             console.log('\n🔍 Analyzing available questions in chapter...');
             const availableQuestions = freshChapter.levels.reduce((acc, level) => {
@@ -1848,13 +1957,51 @@ class ModuleService {
                 return [...acc, ...levelQuestions];
             }, []);
 
-            console.log('Question availability:', {
-                totalQuestions: availableQuestions.length,
-                uniqueLevels: [...new Set(availableQuestions.map(q => q.bloomLevel))].sort()
-            });
-
             if (availableQuestions.length === 0) {
                 throw new AppError('No questions available in chapter after generation', 500);
+            }
+
+            // Distribute questions across levels
+            console.log('\n📊 Creating question distribution...');
+            const selectedQuestions = [];
+            const baseDistribution = [
+                { bloomLevel: 1, count: 2 },
+                { bloomLevel: 2, count: 2 },
+                { bloomLevel: 3, count: 2 },
+                { bloomLevel: 4, count: 2 },
+                { bloomLevel: 5, count: 1 },
+                { bloomLevel: 6, count: 1 }
+            ];
+
+            // Select questions for each level
+            for (const dist of baseDistribution) {
+                const levelQuestions = availableQuestions.filter(q => q.bloomLevel === dist.bloomLevel);
+                console.log(`Level ${dist.bloomLevel}: ${levelQuestions.length} questions available, need ${dist.count}`);
+
+                const selected = levelQuestions
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, dist.count);
+
+                selectedQuestions.push(...selected);
+            }
+
+            // Fill remaining slots if needed
+            const remainingSlots = 10 - selectedQuestions.length;
+            if (remainingSlots > 0) {
+                console.log(`Filling ${remainingSlots} remaining slots...`);
+                const unusedQuestions = availableQuestions.filter(q =>
+                    !selectedQuestions.some(s => s.questionId.equals(q.questionId))
+                );
+
+                const additional = unusedQuestions
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, remainingSlots);
+
+                selectedQuestions.push(...additional);
+            }
+
+            if (selectedQuestions.length !== 10) {
+                throw new AppError(`Failed to select 10 questions (got ${selectedQuestions.length})`, 500);
             }
 
             // Create new question set
@@ -1863,21 +2010,14 @@ class ModuleService {
                 _id: new mongoose.Types.ObjectId(),
                 setNumber: 1,
                 type: 'initial',
-                questionRefs: this.distributeQuestions(availableQuestions, baseDistribution),
-                bloomLevelDistribution: baseDistribution.reduce((acc, item) => {
-                    acc[`level${item.level}`] = item.count;
+                questionRefs: selectedQuestions,
+                bloomLevelDistribution: baseDistribution.reduce((acc, { bloomLevel, count }) => {
+                    acc[`level${bloomLevel}`] = count;
                     return acc;
                 }, {})
             };
 
-            console.log('Question set created:', {
-                id: questionSet._id,
-                totalRefs: questionSet.questionRefs.length,
-                distribution: Object.entries(questionSet.bloomLevelDistribution)
-                    .map(([level, count]) => `${level}: ${count}`)
-            });
-
-            // Add question set to next chapter
+            // Add question set to chapter
             console.log('\n💾 Adding question set to chapter...');
             await ModuleMaster.updateOne(
                 {
@@ -1890,7 +2030,6 @@ class ModuleService {
                     }
                 }
             );
-            console.log('✅ Question set added to chapter');
 
             // Create new chapter progress
             console.log('\n📈 Creating chapter progress record...');
@@ -1902,23 +2041,17 @@ class ModuleService {
                     setNumber: 1,
                     type: 'initial',
                     status: 'not_started',
-                    questions: questionSet.questionRefs.map(ref => ({
-                        questionId: ref.questionId,
+                    questions: selectedQuestions.map(q => ({
+                        questionId: q.questionId,
                         status: 'pending',
-                        bloomLevel: ref.bloomLevel
+                        bloomLevel: q.bloomLevel
                     }))
                 }]
             };
 
-            console.log('Chapter progress created:', {
-                chapterIndex: newChapterProgress.chapterIndex,
-                status: newChapterProgress.status,
-                questionCount: newChapterProgress.questionSets[0].questions.length
-            });
-
             // Update instance state
             console.log('\n🔄 Updating instance state...');
-            const updateResult = await ModuleInstance.updateOne(
+            await ModuleInstance.updateOne(
                 { _id: instance._id },
                 {
                     $set: {
@@ -1933,11 +2066,9 @@ class ModuleService {
                 }
             );
 
-            console.log('✅ Instance state updated successfully');
+            console.log('\n✅ Chapter progression complete');
 
-            // Prepare completion response
-            console.log('\n=== Chapter Progression Complete ===');
-            const completionResponse = {
+            return {
                 evaluation: {
                     chapterProgression: true,
                     nextChapter: {
@@ -1948,24 +2079,66 @@ class ModuleService {
                 adaptiveContent: {
                     questionSetId: questionSet._id,
                     type: 'initial',
-                    questions: questionSet.questionRefs,
+                    questions: selectedQuestions,
                     flashcardIds: []
                 }
             };
-
-            console.log('Final state:', {
-                newChapterIndex: nextChapterIndex,
-                newQuestionSetId: questionSet._id,
-                questionsGenerated: questionSet.questionRefs.length,
-                progressStatus: 'Success'
-            });
-
-            return completionResponse;
 
         } catch (error) {
             console.error('\n❌ Error in handleChapterProgression:', error);
             throw new AppError(`Failed to handle chapter progression: ${error.message}`, 500);
         }
+    }
+
+    distributeQuestions(availableQuestions, distribution) {
+        console.log('\n📊 Distributing questions according to plan...');
+        const selectedQuestions = [];
+        let remainingSlots = 10;
+
+        // First try to fulfill the distribution
+        for (const { bloomLevel, count } of distribution) {
+            console.log(`Processing level ${bloomLevel}, need ${count} questions`);
+            const levelQuestions = availableQuestions.filter(q => q.bloomLevel === bloomLevel);
+            console.log(`Found ${levelQuestions.length} available questions for level ${bloomLevel}`);
+
+            const available = Math.min(count, levelQuestions.length);
+
+            if (available > 0) {
+                const selectedForLevel = levelQuestions
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, available);
+
+                selectedQuestions.push(...selectedForLevel);
+                remainingSlots -= available;
+
+                console.log(`Selected ${available} questions for level ${bloomLevel}`);
+            } else {
+                console.log(`⚠️ No questions available for level ${bloomLevel}`);
+            }
+        }
+
+        // Fill remaining slots with random questions if needed
+        if (remainingSlots > 0) {
+            console.log(`\n📎 Filling ${remainingSlots} remaining slots...`);
+            const unusedQuestions = availableQuestions.filter(q =>
+                !selectedQuestions.some(selected => selected.questionId.equals(q.questionId))
+            );
+
+            if (unusedQuestions.length > 0) {
+                const additional = unusedQuestions
+                    .sort(() => Math.random() - 0.5)
+                    .slice(0, remainingSlots);
+                selectedQuestions.push(...additional);
+                console.log(`Added ${additional.length} additional questions`);
+            }
+        }
+
+        console.log('\nFinal distribution:', selectedQuestions.reduce((acc, q) => {
+            acc[`level${q.bloomLevel}`] = (acc[`level${q.bloomLevel}`] || 0) + 1;
+            return acc;
+        }, {}));
+
+        return selectedQuestions;
     }
 }
 
