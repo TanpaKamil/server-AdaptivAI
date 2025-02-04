@@ -1,29 +1,26 @@
-const JSON_FORMAT_RULES = `
-IMPORTANT: Follow these rules strictly when generating JSON responses:
-1. Escape all special characters in strings using proper JSON escaping:
-   - Use \\" for quotes
-   - Use \\n for newlines
-   - Use \\t for tabs
-   - Use \\r for carriage returns
-2. Avoid using any unescaped control characters in strings
-3. Ensure all string values are properly quoted
-4. Use valid JSON boolean values (true/false) not strings
-5. Use proper number format for numeric values
-6. Ensure all arrays and objects are properly closed
-7. Do not include any explanatory text outside the JSON structure
-8. Do not include any markdown or formatting within strings
-9. Ensure all property names are quoted
-10. Maximum string length for any single value: 1000 characters
-
-Example of properly formatted response:
-{
-  "title": "Sample Title",
-  "description": "This is a description\\nWith a new line",
-  "numeric_value": 42,
-  "is_valid": true,
-  "array_value": ["item1", "item2"]
-}
-`;
+const JSON_FORMAT_RULES = 'IMPORTANT: Follow these rules strictly when generating JSON responses:\n\n' +
+    '1. Escape all special characters in strings using proper JSON escaping:\n' +
+    '   - Use \\" for quotes\n' +
+    '   - Use \\n for newlines\n' +
+    '   - Use \\t for tabs\n' +
+    '   - Use \\r for carriage returns\n' +
+    '2. Avoid using any unescaped control characters in strings\n' +
+    '3. Ensure all string values are properly quoted\n' +
+    '4. Use valid JSON boolean values (true/false) not strings\n' +
+    '5. Use proper number format for numeric values\n' +
+    '6. Ensure all arrays and objects are properly closed\n' +
+    '7. Do not include any explanatory text outside the JSON structure\n' +
+    '8. Do not include any markdown or formatting within strings\n' +
+    '9. Ensure all property names are quoted\n' +
+    '10. Maximum string length for any single value: 1000 characters\n\n' +
+    'Example of properly formatted response:\n' +
+    '{\n' +
+    '  "title": "Sample Title",\n' +
+    '  "description": "This is a description\\nWith a new line",\n' +
+    '  "numeric_value": 42,\n' +
+    '  "is_valid": true,\n' +
+    '  "array_value": ["item1", "item2"]\n' +
+    '}';
 
 const LANGUAGE_PROMPT = JSON_FORMAT_RULES + `
 I will provide you with a document. Before analyzing the content, I need you to:
@@ -88,7 +85,7 @@ Create a comprehensive assessment for the chapter that:
 5. Includes detailed explanations
 6. Total of 10 Questions
 7. Must be multiple choice questions
-8. All the Bloom's level must exist (total 6 levels)
+8. All the Bloom's level must exist (total 6 levels) <== VERY IMPORTANT!
 
 Cognitive Complexity (Bloom's Taxonomy):
 Level 1 (Remember): Basic recall of facts and definitions
@@ -113,7 +110,7 @@ Return response in JSON format:
 [{
   "question": "string (clear, focused question)",
   "options": ["string", "string", "string", "string"],
-  "correctAnswer": number (0-3),
+  "correctAnswer": number (0-3), //STRICTLY BETWEEN 0-3 AS INDEX OF THE OPTIONS
   "explanation": "string (detailed explanation)",
   "bloomLevel": number (1-6, required, indicates cognitive complexity),
   "difficultyLevel": number (1-5, required, indicates challenge level),

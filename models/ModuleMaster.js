@@ -242,31 +242,81 @@ const ModuleMasterSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    isFeatured: {
+        type: Boolean,
+        default: false
+    },
     chapters: [chapterSchema],
     subscribedUsers: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
-    metadata: {
-        difficultyLevel: {
-            type: Number,
-            min: 1,
-            max: 5,
-            default: 3
-        },
-        recommendedPrerequisites: [String],
-        learningObjectives: [String],
-        estimatedDuration: Number,  // in minutes
-        lastUpdated: Date
+
+    // Add an actual field to store the count
+    subscriberCount: {
+        type: Number,
+        default: 0
     }
 }, {
-    timestamps: true
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true }
 });
 
-// Indexes
-ModuleMasterSchema.index({ createdAt: -1 });
-ModuleMasterSchema.index({ isRecommended: 1 });
-ModuleMasterSchema.index({ 'chapters.questionSets.setNumber': 1 });
+// Keep the virtual for backward compatibility
+ModuleMasterSchema.virtual('subscribers').get(function () {
+    // Return the stored count if available, otherwise calculate
+    return this.subscriberCount || this.subscribedUsers.length;
+});
+
+// Middleware to update subscriberCount before saving
+ModuleMasterSchema.pre('save', function (next) {
+    if (this.isModified('subscribedUsers')) {
+        this.subscriberCount = this.subscribedUsers.length;
+    }
+    next();
+});
+
+// Index for efficient sorting by popularity
+ModuleMasterSchema.index({ subscriberCount: -1 });
+
+// Helper methods for managing subscribers
+ModuleMasterSchema.methods.addSubscriber = async function (userId) {
+    if (!this.subscribedUsers.includes(userId)) {
+        this.subscribedUsers.push(userId);
+        this.subscriberCount = this.subscribedUsers.length;
+        await this.save();
+    }
+};
+
+ModuleMasterSchema.methods.removeSubscriber = async function (userId) {
+    this.subscribedUsers = this.subscribedUsers.filter(id => !id.equals(userId));
+    this.subscriberCount = this.subscribedUsers.length;
+    await this.save();
+};
+
+// Static methods for querying
+ModuleMasterSchema.statics.getPopularModules = function (limit = 10) {
+    return this.find()
+        .sort({ subscriberCount: -1 })
+        .limit(limit);
+};
+
+ModuleMasterSchema.statics.searchModulesByPopularity = function (searchQuery, limit = 10) {
+    return this.find({
+        $text: { $search: searchQuery },
+        isActive: true
+    })
+        .sort({ subscriberCount: -1 })
+        .limit(limit);
+};
+
+// Add text index for search
+ModuleMasterSchema.index({ title: 'text', description: 'text' });
 
 module.exports = {
     ModuleMaster: mongoose.model('ModuleMaster', ModuleMasterSchema)

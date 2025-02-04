@@ -1336,7 +1336,7 @@ class ModuleService {
                 recommendedLevel = Math.max(1, currentLevel - 1);
                 adaptationType = 'level_down';
                 console.log('⬇️ Recommending Level Down');
-            } else if (score >= 85 && currentLevel < 6) {
+            } else if (score >= 80 && currentLevel < 6) {
                 recommendedLevel = Math.min(6, currentLevel + 1);
                 adaptationType = 'level_up';
                 console.log('⬆️ Recommending Level Up');
@@ -2139,6 +2139,204 @@ class ModuleService {
         }, {}));
 
         return selectedQuestions;
+    }
+
+    async generateChapterContentWithRetry(chapter, pdfContent, preferredLanguage, maxRetries = 3) {
+        let attempt = 0;
+        while (attempt < maxRetries) {
+            try {
+                console.log(`\nAttempting to generate content for chapter "${chapter.title}" (Attempt ${attempt + 1}/${maxRetries})`);
+
+                // Generate flashcards
+                console.log('Generating flashcards...');
+                const flashcardsResult = await this.model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [
+                            {
+                                text: `${FLASHCARD_GENERATION_PROMPT}\nChapter: ${chapter.title}\nLanguage: ${preferredLanguage}`
+                            },
+                            {
+                                inlineData: {
+                                    mimeType: "application/pdf",
+                                    data: pdfContent
+                                }
+                            }
+                        ]
+                    }]
+                });
+
+                const flashcards = processAIResponse(flashcardsResult.response.text(), 'flashcards');
+                chapter.summaries = flashcards.map(card => ({
+                    content: card.content,
+                    comprehensionLevel: card.comprehensionLevel,
+                    flashcardFront: card.flashcardFront,
+                    flashcardBack: card.flashcardBack,
+                    relatedConcepts: card.relatedConcepts || [],
+                    practicePrompt: card.practicePrompt || ''
+                }));
+
+                // Generate assessment questions
+                console.log('Generating assessment questions...');
+                const questionsResult = await this.model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [
+                            {
+                                text: `${ASSESSMENT_GENERATION_PROMPT}\nChapter: ${chapter.title}\nLanguage: ${preferredLanguage}`
+                            },
+                            {
+                                inlineData: {
+                                    mimeType: "application/pdf",
+                                    data: pdfContent
+                                }
+                            }
+                        ]
+                    }]
+                });
+
+                const questions = processAIResponse(questionsResult.response.text(), 'questions');
+
+                // Group questions by Bloom's level
+                const questionsByLevel = questions.reduce((acc, q) => {
+                    if (!acc[q.bloomLevel]) acc[q.bloomLevel] = [];
+                    acc[q.bloomLevel].push({
+                        ...q,
+                        difficultyLevel: q.difficultyLevel || 1,
+                        learningObjective: q.learningObjective || `Understand ${q.targetedConcept || 'the concept'}`,
+                        targetedConcept: q.targetedConcept || 'Core concept'
+                    });
+                    return acc;
+                }, {});
+
+                chapter.levels = Object.entries(questionsByLevel).map(([level, questions]) => ({
+                    bloomLevel: parseInt(level),
+                    questions
+                }));
+
+                console.log(`✅ Chapter "${chapter.title}" content generated successfully`);
+                return true;
+
+            } catch (error) {
+                console.error(`Error generating content for chapter "${chapter.title}" (Attempt ${attempt + 1}):`, error);
+
+                // If we've reached max retries, throw the error
+                if (attempt === maxRetries - 1) {
+                    throw new Error(`Failed to generate content for chapter "${chapter.title}" after ${maxRetries} attempts: ${error.message}`);
+                }
+
+                // Wait before retrying (exponential backoff)
+                const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+                console.log(`Waiting ${delay}ms before retrying...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+
+                attempt++;
+            }
+        }
+    }
+
+    async createModuleWithContent(pdfPath, userId, title, description, preferredLanguage, pdfUrl) {
+        try {
+            console.log('\n=== Starting Module Creation with Content Generation ===');
+
+            // 1. Verify the PDF file exists and is not empty
+            const stats = await fs.stat(pdfPath);
+            if (stats.size === 0) {
+                throw new AppError('PDF file is empty', 400);
+            }
+
+            // 2. Read the file
+            const fileBuffer = await fs.readFile(pdfPath);
+            const base64Data = fileBuffer.toString('base64');
+
+            // 3. Generate initial metadata and chapter structure
+            console.log('Generating initial metadata and chapter structure...');
+            const [metadataResult, chapterResult] = await Promise.all([
+                this.model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [{
+                            text: `Language: ${preferredLanguage}\n${MODULE_METADATA_PROMPT}`
+                        }, {
+                            inlineData: {
+                                mimeType: "application/pdf",
+                                data: base64Data
+                            }
+                        }]
+                    }]
+                }),
+                this.model.generateContent({
+                    contents: [{
+                        role: 'user',
+                        parts: [{
+                            text: `Language: ${preferredLanguage}\n${CHAPTER_IDENTIFICATION_PROMPT}`
+                        }, {
+                            inlineData: {
+                                mimeType: "application/pdf",
+                                data: base64Data
+                            }
+                        }]
+                    }]
+                })
+            ]);
+
+            // 4. Process initial responses
+            const metadata = processAIResponse(metadataResult.response.text(), 'metadata');
+            const chapters = processAIResponse(chapterResult.response.text(), 'chapters');
+
+            // 5. Create initial module structure
+            const moduleData = {
+                title: title || metadata.title,
+                description: description || metadata.description,
+                excerpt: chapters[0]?.excerpt || metadata.excerpt,
+                createdBy: userId,
+                pdfUrl: pdfUrl,
+                chapters: chapters.map(chapter => ({
+                    title: chapter.title,
+                    order: chapter.order,
+                    excerpt: chapter.excerpt,
+                    summaries: [],
+                    levels: []
+                })),
+                subscribedUsers: [userId]
+            };
+
+            // 6. Create initial module in database
+            console.log('Creating initial module structure...');
+            const createdModule = await ModuleMaster.create(moduleData);
+
+            // 7. Generate content for each chapter with progressive saving
+            console.log(`\nGenerating content for ${chapters.length} chapters...`);
+            for (let i = 0; i < createdModule.chapters.length; i++) {
+                const chapter = createdModule.chapters[i];
+                await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
+
+                // Save progress after each successful chapter generation
+                await ModuleMaster.updateOne(
+                    {
+                        _id: createdModule._id,
+                        'chapters._id': chapter._id
+                    },
+                    {
+                        $set: {
+                            'chapters.$.summaries': chapter.summaries,
+                            'chapters.$.levels': chapter.levels
+                        }
+                    }
+                );
+            }
+
+            // 8. Fetch and return the complete module
+            const completedModule = await ModuleMaster.findById(createdModule._id);
+
+            console.log('=== Module Creation Complete ===');
+            return completedModule;
+
+        } catch (error) {
+            // Don't clean up the file here, let the controller handle it
+            console.error('Error in createModuleWithContent:', error);
+            throw new AppError(`Failed to create module with content: ${error.message}`, error.statusCode || 500);
+        }
     }
 }
 

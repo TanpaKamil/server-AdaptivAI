@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { AppError } = require('../middlewares/errorHandler');
 const moduleRoutes = require('./moduleRoutes');
+const userRoutes = require('./userRoutes');
 
 // Test routes for error handling
 router.get('/test-error/:type', async (req, res, next) => {
@@ -58,6 +59,8 @@ router.use((req, res, next) => {
 
 // Module routes
 router.use('/modules', moduleRoutes);
+//userRoutes
+router.use('/users', userRoutes);
 
 // Generic test route
 router.get('/test', (req, res) => {
