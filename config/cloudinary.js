@@ -6,14 +6,21 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const uploadToCloudinary = async (filePath) => {
+const uploadToCloudinary = async (filePath, type = 'raw') => {
     try {
-        const result = await cloudinary.uploader.upload(filePath, {
-            resource_type: 'raw',
+        const options = {
             folder: 'adaptive-learning',
-            public_id: `module-${Date.now()}`,
-            format: 'pdf'
-        });
+            public_id: `${type}-${Date.now()}`
+        };
+
+        if (type === 'image') {
+            options.resource_type = 'image';
+        } else {
+            options.resource_type = 'raw';
+            options.format = 'pdf';
+        }
+
+        const result = await cloudinary.uploader.upload(filePath, options);
         return result;
     } catch (error) {
         console.error('Error uploading to Cloudinary:', error);
