@@ -7,12 +7,11 @@ class UserService {
             const newUser = await User.create(userData);
             return newUser;
         } catch (error) {
-            // Handle unique constraint violations
             if (error.code === 11000) {
-                if (error.keyPattern.username) {
-                    throw new AppError('Username already exists', 400);
-                } else if (error.keyPattern.email) {
+                if (error.keyPattern.email) {
                     throw new AppError('Email already exists', 400);
+                } else if (error.keyPattern.username) {
+                    throw new AppError('Username already exists', 400);
                 }
             }
             throw new AppError('Failed to create user', 500);
@@ -51,6 +50,9 @@ class UserService {
             }
             return user;
         } catch (error) {
+            if (error instanceof AppError) {
+                throw error;
+            }
             throw new AppError('Failed to get user by email', 500);
         }
     }

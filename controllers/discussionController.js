@@ -26,7 +26,12 @@ class DiscussionController {
 
             if (req.file) {
                 localFilePath = req.file.path;
-                cloudinaryResult = await uploadToCloudinary(localFilePath, 'image');
+                try {
+                    cloudinaryResult = await uploadToCloudinary(localFilePath, 'image');
+                } catch (error) {
+                    // Change this to throw 500 error for image upload failures
+                    throw new AppError('Failed to upload image', 500);
+                }
             }
 
             const discussion = await Discussion.create({
@@ -196,6 +201,10 @@ class DiscussionController {
         const { content } = req.body;
         const userId = req.user.id;
         const username = req.user.username;
+
+        if (!content) {
+            throw new AppError('Comment content is required', 400);
+        }
 
         const discussion = await Discussion.findById(discussionId);
 

@@ -31,8 +31,11 @@ const errorHandlers = {
     },
 
     DuplicateKeyError: (err) => {
-        const value = err.errmsg?.match(/([\"'])(\\?.)*?\1/)?.[0] || '';
-        return new AppError(`Duplicate field value: ${value}. Please use another value`, 400);
+        if (err.keyPattern) {
+            const field = Object.keys(err.keyPattern)[0];
+            return new AppError(`${field.charAt(0).toUpperCase() + field.slice(1)} already exists`, 400);
+        }
+        return new AppError('Duplicate field value', 400);
     },
 
     JsonWebTokenError: () =>

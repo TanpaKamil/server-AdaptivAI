@@ -22,25 +22,22 @@ class UserController {
         try {
             const { email, password } = req.body;
 
-            const user = await userService.getUserByEmail(email); // Make sure this method exists.
+            const user = await userService.getUserByEmail(email);
             if (!user) {
-                throw new AppError('Invalid email or password', 401);
+                throw new AppError('User not found', 404);
             }
 
             const match = await authHelper.comparePassword(password, user.password);
             if (!match) {
-                throw new AppError('Invalid email or password', 401);
+                throw new AppError('Invalid password', 401);
             }
 
-            // Generate JWT
             const token = authHelper.generateToken({ id: user._id, username: user.username });
-
             res.status(200).json({
                 status: 'success',
                 data: { token }
             });
         } catch (error) {
-            // Forward the error so that your error handler can send the correct 401 status.
             next(error);
         }
     }
@@ -131,18 +128,29 @@ class UserController {
                     throw new AppError('Email already exists', 400);
                 }
             }
+
             throw new AppError(error.message, error.statusCode || 500);
         }
     }
 
-    async register(req, res) {
-        const userData = req.body;
-        userData.password = await authHelper.hashPassword(userData.password); // Hash password
-        await userService.createUser(userData);
-        res.status(201).json({
-            status: 'success',
-            message: 'Registration successful'
-        });
+    async register(req, res, next) {
+        try {
+            const userData = req.body;
+
+            if (!userData.password || userData.password.length < 6) {
+                throw new AppError('Password must be at least 6 characters', 400);
+            }
+
+            userData.password = await authHelper.hashPassword(userData.password);
+            await userService.createUser(userData);
+
+            res.status(201).json({
+                status: 'success',
+                message: 'Registration successful'
+            });
+        } catch (error) {
+            next(error);
+        }
     }
 
     async getProfile(req, res) {
