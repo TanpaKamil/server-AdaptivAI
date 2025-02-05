@@ -117,7 +117,6 @@ class ModuleController {
     }
   }
 
-  // Modified background processing method
   async processModuleInBackground(
     moduleId,
     pdfPath,
@@ -128,34 +127,16 @@ class ModuleController {
     pdfUrl
   ) {
     try {
-      // Generate module content
+      // Generate module content, passing the existing module ID
       const moduleContent = await moduleService.createModuleWithContent(
         pdfPath,
         userId,
         title,
         description,
         preferredLanguage,
-        pdfUrl
+        pdfUrl,
+        moduleId  // Pass the existing module ID
       );
-
-      // Update the existing module with generated content using findOneAndUpdate
-      const updatedModule = await ModuleMaster.findOneAndUpdate(
-        { _id: moduleId, status: 'processing' }, // Only update if status is still 'processing'
-        {
-          $set: {
-            title: moduleContent.title,
-            description: moduleContent.description,
-            excerpt: moduleContent.excerpt,
-            chapters: moduleContent.chapters,
-            status: 'completed'
-          }
-        },
-        { new: true }
-      );
-
-      if (!updatedModule) {
-        console.error('Module not found or already processed:', moduleId);
-      }
 
       // Clean up the temporary file
       await cleanupFile(pdfPath);
@@ -182,7 +163,6 @@ class ModuleController {
       }
     }
   }
-
 
   // Get all modules with basic info
   async getAllModules(req, res) {

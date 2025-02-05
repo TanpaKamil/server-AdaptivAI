@@ -2235,9 +2235,10 @@ class ModuleService {
         }
     }
 
-    async createModuleWithContent(pdfPath, userId, title, description, preferredLanguage, pdfUrl) {
+    async createModuleWithContent(pdfPath, userId, title, description, preferredLanguage, pdfUrl, existingModuleId) {
         try {
-            console.log('\n=== Starting Module Creation with Content Generation ===');
+            console.log('\n=== Starting Module Content Generation ===');
+            console.log('Existing Module ID:', existingModuleId);
 
             // 1. Read and validate PDF file
             const fileBuffer = await fs.readFile(pdfPath);
@@ -2278,41 +2279,43 @@ class ModuleService {
             const metadata = processAIResponse(metadataResult.response.text(), 'metadata');
             const chapters = processAIResponse(chapterResult.response.text(), 'chapters');
 
-            // 4. Create unique identifier
-            const uniqueIdentifier = `${userId}_${Date.now()}`;
+            // 4. Prepare chapter data
+            const chapterData = chapters.map(chapter => ({
+                title: chapter.title,
+                order: chapter.order,
+                excerpt: chapter.excerpt,
+                summaries: [],
+                levels: []
+            }));
 
-            // 5. Create module structure
-            console.log('Creating module structure...');
-            const moduleData = {
-                title: title || metadata.title,
-                description: description || metadata.description,
-                excerpt: chapters[0]?.excerpt || metadata.excerpt,
-                createdBy: userId,
-                pdfUrl: pdfUrl,
-                chapters: chapters.map(chapter => ({
-                    title: chapter.title,
-                    order: chapter.order,
-                    excerpt: chapter.excerpt,
-                    summaries: [],
-                    levels: []
-                })),
-                subscribedUsers: [userId],
-                status: 'completed',
-                uniqueIdentifier // Add the uniqueIdentifier field
-            };
+            // 5. Update existing module instead of creating new one
+            const updatedModule = await ModuleMaster.findByIdAndUpdate(
+                existingModuleId,
+                {
+                    $set: {
+                        title: title || metadata.title,
+                        description: description || metadata.description,
+                        excerpt: chapters[0]?.excerpt || metadata.excerpt,
+                        chapters: chapterData,
+                        status: 'completed'
+                    }
+                },
+                { new: true }
+            );
 
-            // 6. Create and save module with complete data
-            const createdModule = await ModuleMaster.create(moduleData);
+            if (!updatedModule) {
+                throw new AppError('Failed to update module', 500);
+            }
 
-            // 7. Generate content for each chapter
+            // 6. Generate content for each chapter
             console.log(`\nGenerating content for ${chapters.length} chapters...`);
-            for (let i = 0; i < createdModule.chapters.length; i++) {
-                const chapter = createdModule.chapters[i];
+            for (let i = 0; i < updatedModule.chapters.length; i++) {
+                const chapter = updatedModule.chapters[i];
                 await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
 
                 // Save progress after each chapter
                 await ModuleMaster.updateOne(
-                    { _id: createdModule._id, 'chapters._id': chapter._id },
+                    { _id: updatedModule._id, 'chapters._id': chapter._id },
                     {
                         $set: {
                             'chapters.$.summaries': chapter.summaries,
@@ -2322,8 +2325,8 @@ class ModuleService {
                 );
             }
 
-            // 8. Return completed module
-            return await ModuleMaster.findById(createdModule._id);
+            // 7. Return updated module
+            return await ModuleMaster.findById(updatedModule._id);
 
         } catch (error) {
             console.error('Error in createModuleWithContent:', error);
