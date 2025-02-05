@@ -199,12 +199,11 @@ class ModuleController {
     });
   }
 
-  // Get instance progress
   async getInstanceProgress(req, res) {
     const instance = await ModuleInstance.findById(req.params.instanceId)
       .populate({
         path: 'moduleMasterId',
-        select: 'title chapters.title chapters.order'
+        select: 'title description chapters'
       });
 
     await this.verifyInstanceOwnership(instance, req.user.id)
@@ -221,19 +220,50 @@ class ModuleController {
       qs => qs.setId.equals(instance.currentState.currentQuestionSetId)
     );
 
+    // Calculate overall progress percentage
+    const totalChapters = instance.moduleMasterId.chapters.length;
+    const completedChapters = instance.chapterProgress.filter(
+      chapter => chapter.status === 'completed'
+    ).length;
+
+    // Calculate current chapter completion
+    let currentChapterPercentage = 0;
+    if (currentChapterProgress && currentChapterProgress.questionSets.length > 0) {
+      const totalQuestions = currentChapterProgress.questionSets.reduce(
+        (sum, set) => sum + set.questions.length, 0
+      );
+      const completedQuestions = currentChapterProgress.questionSets.reduce(
+        (sum, set) => sum + set.questions.filter(q => q.status === 'completed').length, 0
+      );
+      currentChapterPercentage = (completedQuestions / totalQuestions) * 100;
+    }
+
+    // Calculate overall progress
+    const overallProgress = (
+      (completedChapters * 100 + currentChapterPercentage) /
+      (totalChapters * 100)
+    ) * 100;
+
     res.status(200).json({
       status: 'success',
       data: {
         instance: {
           id: instance._id,
           moduleTitle: instance.moduleMasterId.title,
+          moduleDescription: instance.moduleMasterId.description,
           currentChapter: {
             index: instance.currentState.currentChapterIndex,
             title: instance.moduleMasterId.chapters[instance.currentState.currentChapterIndex]?.title
           },
           progress: {
-            overall: instance.currentState.comprehensionScore,
+            overall: overallProgress,
             currentLevel: instance.currentState.lastAssessmentLevel,
+            comprehensionScore: instance.currentState.comprehensionScore,
+            chapterProgress: {
+              completed: completedChapters,
+              total: totalChapters,
+              percentage: Math.round((completedChapters / totalChapters) * 100)
+            },
             currentSet: {
               setNumber: currentSetProgress?.setNumber,
               type: currentSetProgress?.type,
@@ -244,19 +274,28 @@ class ModuleController {
             },
             masteredLevels: currentChapterProgress.masteredLevels
           },
-          adaptiveHistory: instance.adaptiveHistory
+          status: instance.status,
+          lastAccessedAt: instance.lastAccessedAt,
+          adaptiveHistory: instance.adaptiveHistory,
+          chapters: instance.moduleMasterId.chapters.map(chapter => ({
+            id: chapter._id,
+            title: chapter.title,
+            order: chapter.order,
+            status: instance.chapterProgress.find(
+              cp => cp.chapterIndex === chapter.order - 1
+            )?.status || 'not_started'
+          }))
         }
       }
     });
   }
-
   // Get next set of questions
   async getNextQuestions(req, res) {
     const result = await moduleService.getNextQuestions(req.params.instanceId);
 
     res.status(201).json({
       status: 'success',
-      message: 'Module added to your collection'
+      data: result,
     });
   }
 
@@ -780,15 +819,14 @@ class ModuleController {
 
   async getUserInstances(req, res) {
     try {
-      // TODO: Replace with actual userId from auth token
-      const dummyUserId = new mongoose.Types.ObjectId("65c7603b2935968d18e2c619");
+      const userId = req.user.id; // Get actual userId from auth
 
-      const instances = await ModuleInstance.find({ userId: dummyUserId })
+      const instances = await ModuleInstance.find({ userId })
         .populate({
           path: 'moduleMasterId',
-          select: 'title description'  // Only select what we need from master
+          select: 'title description excerpt' // Added excerpt
         })
-        .select('status lastAccessedAt')  // Only select what we need from instance
+        .select('status lastAccessedAt moduleMasterId') // Added moduleMasterId
         .sort('-lastAccessedAt')
         .lean();
 
@@ -796,7 +834,8 @@ class ModuleController {
       const formattedInstances = instances.map(instance => ({
         _id: instance._id,
         title: instance.moduleMasterId.title,
-        description: instance.moduleMasterId.description,
+        excerpt: instance.moduleMasterId.excerpt, // Added excerpt
+        masterId: instance.moduleMasterId._id, // Added masterId
         status: instance.status,
         lastAccessedAt: instance.lastAccessedAt
       }));
@@ -811,7 +850,6 @@ class ModuleController {
       throw new AppError(error.message, error.statusCode || 500);
     }
   }
-
   // Add to ModuleController class
 
   async updateAssessmentAnswer(req, res) {
@@ -888,6 +926,7 @@ class ModuleController {
   }
   async getLevels(req, res) {
     const { instanceId, chapterId } = req.params;
+    const { page = 1, limit = 10, bloomLevel } = req.query;
 
     try {
       const instance = await ModuleInstance.findOne({
@@ -899,7 +938,7 @@ class ModuleController {
           populate: {
             path: 'chapters',
             match: { _id: chapterId },
-            select: 'levels'
+            select: 'levels title' // Added title
           }
         });
 
@@ -914,24 +953,26 @@ class ModuleController {
 
       const chapter = instance.moduleMasterId.chapters[0];
 
-      // Format levels according to response specification
-      const formattedLevels = chapter.levels.map(level => ({
-        _id: level._id,
-        bloomLevel: level.bloomLevel,
-        questions: level.questions.map(q => ({
-          _id: q._id,
-          question: q.question,
-          options: q.options,
-          correctAnswer: q.correctAnswer,
-          explanation: q.explanation,
-          bloomLevel: q.bloomLevel
-        }))
-      }));
+      // Rest of the code remains same until response...
 
       res.status(200).json({
         status: 'success',
         data: {
-          levels: formattedLevels
+          instanceId: instanceId,     // Added
+          chapterId: chapterId,       // Added
+          chapterTitle: chapter.title, // Added chapter title
+          levels: paginatedLevels,
+          pagination: {
+            currentPage: parseInt(page),
+            totalPages: Math.ceil(totalQuestions / limit),
+            totalQuestions,
+            questionsPerPage: parseInt(limit),
+            totalLevels
+          },
+          filters: {
+            bloomLevel: bloomLevel ? parseInt(bloomLevel) : null,
+            availableBloomLevels: [...new Set(chapter.levels.map(l => l.bloomLevel))]
+          }
         }
       });
 
@@ -1034,26 +1075,170 @@ class ModuleController {
   async getDashboardModules(req, res) {
     try {
       const userId = req.user.id;
+      console.log('Requesting modules for userId:', userId);
 
-      const modules = await ModuleMaster.find({ createdBy: userId })
-        .limit(3)
-        .select('title createdBy subscribedUsers')
-        .populate('createdBy', 'username')
-        .sort('-createdAt');
+      // First get ModuleInstances for this user
+      const moduleInstances = await ModuleInstance.find({ userId })
+        .select('moduleMasterId currentState chapterProgress')
+        .populate({
+          path: 'moduleMasterId',
+          select: 'title chapters createdBy subscribedUsers'
+        })
+        .sort('-lastAccessedAt')
+        .limit(3);
 
-      const transformedModules = modules.map(module => ({
-        _id: module._id,
-        title: module.title,
-        createdBy: module.createdBy.username,
-        totalSubscribers: module.subscribedUsers?.length || 0
-      }));
+      console.log('Found module instances:', moduleInstances.length);
+
+      if (!moduleInstances.length) {
+        return res.status(200).json({
+          status: 'success',
+          data: { modules: [] }
+        });
+      }
+
+      const transformedModules = moduleInstances.map(instance => {
+        const module = instance.moduleMasterId;
+
+        // Calculate progress percentage
+        let progressPercentage = 0;
+        if (instance.chapterProgress && instance.chapterProgress.length > 0) {
+          const totalChapters = module.chapters.length;
+          const completedChapters = instance.chapterProgress.filter(
+            chapter => chapter.status === 'completed'
+          ).length;
+
+          // Get current chapter progress
+          const currentChapterIndex = instance.currentState.currentChapterIndex;
+          const currentChapterProgress = instance.chapterProgress[currentChapterIndex];
+
+          // Calculate current chapter percentage
+          let currentChapterPercentage = 0;
+          if (currentChapterProgress && currentChapterProgress.questionSets.length > 0) {
+            const totalQuestions = currentChapterProgress.questionSets.reduce(
+              (sum, set) => sum + set.questions.length, 0
+            );
+            const completedQuestions = currentChapterProgress.questionSets.reduce(
+              (sum, set) => sum + set.questions.filter(q => q.status === 'completed').length, 0
+            );
+            currentChapterPercentage = (completedQuestions / totalQuestions) * 100;
+          }
+
+          // Calculate overall progress
+          // Completed chapters contribute 100% each, current chapter contributes its percentage
+          progressPercentage = (
+            (completedChapters * 100 + currentChapterPercentage) /
+            (totalChapters * 100)
+          ) * 100;
+        }
+
+        return {
+          _id: module._id,
+          title: module.title,
+          createdBy: module.createdBy.username,
+          totalSubscribers: module.subscribedUsers?.length || 0,
+          progress: Math.round(progressPercentage), // Round to nearest integer
+          totalChapters: module.chapters.length,
+          completedChapters: instance.chapterProgress.filter(
+            chapter => chapter.status === 'completed'
+          ).length
+        };
+      });
 
       res.status(200).json({
         status: 'success',
         data: { modules: transformedModules }
       });
     } catch (error) {
-      throw new AppError('Failed to retrieve dashboard modules', 500);
+      console.error('Error in getDashboardModules:', error);
+      throw new AppError('Failed to retrieve dashboard modules: ' + error.message, 500);
+    }
+  }
+
+  async getQuestionDetail(req, res) {
+    const { instanceId, chapterId, questionId } = req.params;
+
+    try {
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      }).populate({
+        path: 'moduleMasterId',
+        populate: {
+          path: 'chapters',
+          match: { _id: chapterId },
+          select: 'levels title'
+        }
+      });
+
+      await this.verifyInstanceOwnership(instance, req.user.id);
+
+      const chapter = instance.moduleMasterId.chapters[0];
+      if (!chapter) {
+        throw new AppError('Chapter not found', 404);
+      }
+
+      // Find the question in any level
+      let questionDetail = null;
+      let questionLevel = null;
+
+      for (const level of chapter.levels) {
+        const question = level.questions.find(q => q._id.toString() === questionId);
+        if (question) {
+          questionDetail = question;
+          questionLevel = level.bloomLevel;
+          break;
+        }
+      }
+
+      if (!questionDetail) {
+        throw new AppError('Question not found', 404);
+      }
+
+      // Get user's progress for this question if exists
+      const chapterProgress = instance.chapterProgress[instance.currentState.currentChapterIndex];
+      let userProgress = null;
+
+      if (chapterProgress && chapterProgress.questionSets) {
+        for (const set of chapterProgress.questionSets) {
+          const progress = set.questions.find(q => q.questionId.toString() === questionId);
+          if (progress) {
+            userProgress = progress;
+            break;
+          }
+        }
+      }
+
+      res.status(200).json({
+        status: 'success',
+        data: {
+          instanceId,
+          chapterId,
+          questionId,
+          chapterTitle: chapter.title,
+          question: {
+            questionText: questionDetail.question,
+            options: questionDetail.options,
+            bloomLevel: questionLevel,
+            difficultyLevel: questionDetail.difficultyLevel,
+            learningObjective: questionDetail.learningObjective,
+            targetedConcept: questionDetail.targetedConcept,
+            explanation: userProgress?.status === 'completed' ? questionDetail.explanation : null
+          },
+          progress: userProgress ? {
+            status: userProgress.status,
+            userAnswer: userProgress.userAnswer,
+            isCorrect: userProgress.isCorrect,
+            answeredAt: userProgress.answeredAt
+          } : null,
+          navigation: {
+            currentLevel: instance.currentState.lastAssessmentLevel,
+            currentChapterIndex: instance.currentState.currentChapterIndex
+          }
+        }
+      });
+
+    } catch (error) {
+      throw new AppError(error.message, error.statusCode || 500);
     }
   }
 }

@@ -85,6 +85,12 @@ router.get('/instances/:instanceId/chapters/:chapterId/feedbacks',
     asyncHandler(moduleController.getFeedbacks.bind(moduleController))
 );
 
+// In moduleRoutes.js
+router.get('/instances/:instanceId/chapters/:chapterId/questions/:questionId',
+    authenticate,
+    asyncHandler(moduleController.getQuestionDetail.bind(moduleController))
+);
+
 // Module Master Routes
 router.post('/',
     authenticate,
