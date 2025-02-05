@@ -1,13 +1,13 @@
 // src/app.js
 require('dotenv').config();
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const { errorHandler, AppError } = require('./middlewares/errorHandler');
 const routes = require('./routes');
 
+// Initialize express
 const app = express();
 
 // Middleware
@@ -63,30 +63,4 @@ app.use((req, res, next) => {
 // Error Handler
 app.use(errorHandler);
 
-// MongoDB Connection with retry logic
-const connectDB = async (retries = 5) => {
-    try {
-        await mongoose.connect(process.env.MONGODB_URI);
-        console.log('Connected to MongoDB Atlas');
-    } catch (error) {
-        if (retries > 0) {
-            console.log(`Retrying connection... (${retries} attempts left)`);
-            setTimeout(() => connectDB(retries - 1), 5000);
-        } else {
-            console.error('Error connecting to MongoDB:', error);
-            process.exit(1);
-        }
-    }
-};
-
-// Start server only after DB connection
-const startServer = async () => {
-    await connectDB();
-    const PORT = process.env.PORT || 5000;
-    app.listen(PORT, () => {
-        console.log(`Server is running on port ${PORT}`);
-        console.log(`API Documentation available at http://localhost:${PORT}/api-docs`);
-    });
-};
-
-startServer();
+module.exports = app;

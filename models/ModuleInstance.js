@@ -1,21 +1,7 @@
+// src/models/ModuleInstance.js
 const mongoose = require('mongoose');
 
-const masteredLevelSchema = new mongoose.Schema({
-    chapterId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true
-    },
-    levelId: {
-        type: mongoose.Schema.Types.ObjectId,
-        required: true
-    },
-    masteredAt: {
-        type: Date,
-        default: Date.now
-    }
-});
-
-const currentQuestionSchema = new mongoose.Schema({
+const questionAttemptSchema = new mongoose.Schema({
     questionId: {
         type: mongoose.Schema.Types.ObjectId,
         required: true
@@ -27,7 +13,46 @@ const currentQuestionSchema = new mongoose.Schema({
     },
     userAnswer: Number,
     isCorrect: Boolean,
-    answeredAt: Date
+    answeredAt: Date,
+    timeSpent: Number,  // in seconds
+    attemptCount: {
+        type: Number,
+        default: 1
+    }
+});
+
+const questionSetProgressSchema = new mongoose.Schema({
+    setId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true
+    },
+    setNumber: {
+        type: Number,
+        required: true
+    },
+    type: {
+        type: String,
+        enum: ['initial', 'adaptive'],
+        required: true
+    },
+    questions: [questionAttemptSchema],
+    status: {
+        type: String,
+        enum: ['not_started', 'in_progress', 'completed'],
+        default: 'not_started'
+    },
+    score: {
+        type: Number,
+        min: 0,
+        max: 100
+    },
+    startedAt: Date,
+    completedAt: Date,
+    adaptationTrigger: {
+        previousScore: Number,
+        weakAreas: [String],
+        recommendedLevel: Number
+    }
 });
 
 const adaptiveHistorySchema = new mongoose.Schema({
@@ -62,13 +87,17 @@ const adaptiveHistorySchema = new mongoose.Schema({
             level5: Number,
             level6: Number
         },
-        strengths: [String],
-        weakAreas: [String]
-    },
-    masteryStatus: {
-        isMastered: Boolean,
-        consecutiveSuccesses: Number,
-        remainingAttemptsForMastery: Number
+        strengths: [{
+            topic: String,
+            bloomLevel: Number,
+            demonstratedSkills: [String]
+        }],
+        weakAreas: [{
+            topic: String,
+            bloomLevel: Number,
+            detectedIssues: [String],
+            recommendedFocus: String
+        }]
     },
     adaptationDetails: {
         adaptationType: {
@@ -82,49 +111,39 @@ const adaptiveHistorySchema = new mongoose.Schema({
             percentage: Number
         }]
     },
-    generatedQuestions: [{
+    newQuestionSetId: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Question'
-    }],
-    generatedFlashcards: [{
+        required: true
+    },
+    newFlashcardIds: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Summary'
-    }],
-    chapterProgress: {
-        currentChapter: Number,
-        isReadyForNextChapter: Boolean,
-        masteryPercentage: Number
-    }
+    }]
 });
 
-const currentQuestionSetSchema = new mongoose.Schema({
-    questions: [{
-        questionId: {
-            type: mongoose.Schema.Types.ObjectId,
-            required: true
-        },
-        status: {
-            type: String,
-            enum: ['active', 'answered', 'skipped'],
-            default: 'active'
-        },
-        assignedAt: {
-            type: Date,
-            default: Date.now
-        },
-        expiresAt: {
-            type: Date
-            // Bisa ditambah TTL untuk auto-expire jika user tidak menyelesaikan
-        }
-    }],
-    attemptNumber: {
+const chapterProgressSchema = new mongoose.Schema({
+    chapterIndex: {
         type: Number,
-        default: 1
+        required: true
     },
-    setStatus: {
+    status: {
         type: String,
-        enum: ['in_progress', 'completed', 'expired'],
-        default: 'in_progress'
+        enum: ['not_started', 'in_progress', 'completed'],
+        default: 'not_started'
+    },
+    currentQuestionSetIndex: {
+        type: Number,
+        default: 0
+    },
+    questionSets: [questionSetProgressSchema],
+    masteredLevels: [{
+        bloomLevel: Number,
+        masteredAt: Date
+    }],
+    comprehensionScore: {
+        type: Number,
+        min: 0,
+        max: 100
     }
 });
 
@@ -160,69 +179,18 @@ const ModuleInstanceSchema = new mongoose.Schema({
             default: 1,
             min: 1,
             max: 6
+        },
+        currentQuestionSetId: {
+            type: mongoose.Schema.Types.ObjectId
         }
     },
-    progress: {
-        completedChapters: [{
-            type: mongoose.Schema.Types.ObjectId
-        }],
-        masteredLevels: [{
-            chapterId: {
-                type: mongoose.Schema.Types.ObjectId,
-                required: true
-            },
-            levelId: {
-                type: mongoose.Schema.Types.ObjectId,
-                required: true
-            },
-            masteredAt: {
-                type: Date,
-                default: Date.now
-            }
-        }],
-        currentQuestions: [{
-            questionId: {
-                type: mongoose.Schema.Types.ObjectId,
-                required: true
-            },
-            status: {
-                type: String,
-                enum: ['pending', 'completed'],
-                default: 'pending'
-            },
-            userAnswer: Number,
-            isCorrect: Boolean,
-            answeredAt: Date
-        }]
+    chapterProgress: [chapterProgressSchema],
+    adaptiveHistory: [adaptiveHistorySchema],
+    learningPath: {
+        recommendedOrder: [Number],
+        currentPosition: Number,
+        lastUpdated: Date
     },
-    adaptiveHistory: [{
-        timestamp: {
-            type: Date,
-            default: Date.now
-        },
-        previousLevel: {
-            type: Number,
-            required: true,
-            min: 1,
-            max: 6
-        },
-        newLevel: {
-            type: Number,
-            required: true,
-            min: 1,
-            max: 6
-        },
-        assessmentScore: {
-            type: Number,
-            required: true,
-            min: 0,
-            max: 100
-        },
-        generatedQuestions: [{
-            type: mongoose.Schema.Types.ObjectId,
-            ref: 'Question'
-        }]
-    }],
     startedAt: {
         type: Date,
         default: Date.now
@@ -241,9 +209,6 @@ const ModuleInstanceSchema = new mongoose.Schema({
     timestamps: true
 });
 
-
-
-// Indexes
 ModuleInstanceSchema.index({ userId: 1, moduleMasterId: 1 }, { unique: true });
 ModuleInstanceSchema.index({ status: 1 });
 ModuleInstanceSchema.index({ lastAccessedAt: -1 });
