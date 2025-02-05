@@ -30,6 +30,12 @@ router.get('/pub/:moduleId',
 // Protected Routes (Auth Required)
 // ------------------------
 
+//dashboard module
+router.get('/dashboard',
+    authenticate,
+    asyncHandler(moduleController.getDashboardModules.bind(moduleController))
+);
+
 // Public Module Routes that need auth
 router.post('/pub/:moduleId',
     authenticate,

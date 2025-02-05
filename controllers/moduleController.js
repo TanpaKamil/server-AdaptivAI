@@ -254,9 +254,9 @@ class ModuleController {
   async getNextQuestions(req, res) {
     const result = await moduleService.getNextQuestions(req.params.instanceId);
 
-    res.status(200).json({
+    res.status(201).json({
       status: 'success',
-      data: result
+      message: 'Module added to your collection'
     });
   }
 
@@ -351,24 +351,20 @@ class ModuleController {
     }
   }
 
-  // Get featured public modules
   async getFeaturedPublicModules(req, res) {
     try {
       const featuredModules = await ModuleMaster.find({ isActive: true })
-        .limit(5)
-        .select('title description excerpt createdBy subscribedUsers metadata')
+        .limit(3)
+        .select('title excerpt createdBy subscribedUsers')
         .populate('createdBy', 'username')
-        .sort({ 'subscribedUsers': -1, 'createdAt': -1 }); // Sort by subscriber count and then date
+        .sort({ 'subscribedUsers': -1, 'createdAt': -1 });
 
-      // Transform the response to include subscriber count
       const transformedModules = featuredModules.map(module => ({
         _id: module._id,
         title: module.title,
-        description: module.description,
         excerpt: module.excerpt,
-        createdBy: module.createdBy,
-        totalSubscribers: module.subscribedUsers?.length || 0,
-        metadata: module.metadata
+        createdBy: module.createdBy.username,
+        totalSubscribers: module.subscribedUsers?.length || 0
       }));
 
       res.status(200).json({
@@ -386,19 +382,16 @@ class ModuleController {
         isFeatured: true,
         isActive: true
       })
-        .limit(3)
-        .select('title description excerpt createdBy subscribedUsers metadata')
+        .limit(4)
+        .select('title createdBy subscribedUsers')
         .populate('createdBy', 'username')
         .sort('-createdAt');
 
       const transformedModules = recommendedModules.map(module => ({
         _id: module._id,
         title: module.title,
-        description: module.description,
-        excerpt: module.excerpt,
-        createdBy: module.createdBy,
+        createdBy: module.createdBy.username,
         totalSubscribers: module.subscribedUsers?.length || 0,
-        metadata: module.metadata,
         isRecommended: true
       }));
 
@@ -504,10 +497,9 @@ class ModuleController {
     }
   }
 
-  // Add public module to user's collection
   async addModuleToCollection(req, res) {
     const { moduleId } = req.params;
-    const userId = req.user.id; // Assuming you have middleware to set req.user
+    const userId = req.user.id;
 
     try {
       const module = await ModuleMaster.findById(moduleId);
@@ -529,7 +521,7 @@ class ModuleController {
       }
 
       // Create a new module instance for the user
-      const newInstance = await ModuleInstance.create({
+      await ModuleInstance.create({
         moduleMasterId: moduleId,
         userId: userId,
         currentState: {
@@ -547,65 +539,11 @@ class ModuleController {
 
       res.status(201).json({
         status: 'success',
-        data: { instance: newInstance }
+        message: 'Module added to collection successfully'
       });
 
     } catch (error) {
       throw new AppError('Failed to add module to collection', 500);
-    }
-  }
-
-  async getModuleInstance(req, res) {
-    const { instanceId } = req.params;
-
-    try {
-      // Find instance and populate necessary fields
-      const instance = await ModuleInstance.findOne({
-        _id: instanceId,
-        userId: req.user.id
-      })
-        .populate({
-          path: 'moduleMasterId',
-          select: 'title chapters excerpt'
-        })
-        .lean();
-
-      if (!instance) {
-        throw new AppError('Module instance not found', 404);
-      }
-
-      // Transform data to match required response format
-      const response = {
-        ModuleInstance: {
-          _id: instance._id,
-          moduleMasterId: instance.moduleMasterId._id,
-          title: instance.moduleMasterId.title,
-          progress: {
-            completedChapters: instance.chapterProgress
-              .filter(chapter => chapter.status === 'completed')
-              .map(chapter => chapter._id)
-          },
-          chapters: instance.moduleMasterId.chapters.map(chapter => ({
-            _id: chapter._id,
-            title: chapter.title,
-            order: chapter.order
-          })),
-          excerpt: instance.moduleMasterId.excerpt,
-          createdDate: instance.createdAt,
-          status: instance.status,
-          lastAccessedAt: instance.lastAccessedAt,
-          currentState: {
-            currentChapterIndex: instance.currentState.currentChapterIndex,
-            currentLevelIndex: instance.currentState.currentLevelIndex,
-            comprehensionScore: instance.currentState.comprehensionScore,
-            lastAssessmentLevel: instance.currentState.lastAssessmentLevel
-          }
-        }
-      };
-
-      res.status(200).json(response);
-    } catch (error) {
-      throw new AppError(error.message, error.statusCode || 500);
     }
   }
 
@@ -1090,6 +1028,32 @@ class ModuleController {
     } catch (error) {
       console.error('Error in getFeedbacks:', error);
       throw new AppError(error.message || 'Error getting feedbacks', error.statusCode || 500);
+    }
+  }
+
+  async getDashboardModules(req, res) {
+    try {
+      const userId = req.user.id;
+
+      const modules = await ModuleMaster.find({ createdBy: userId })
+        .limit(3)
+        .select('title createdBy subscribedUsers')
+        .populate('createdBy', 'username')
+        .sort('-createdAt');
+
+      const transformedModules = modules.map(module => ({
+        _id: module._id,
+        title: module.title,
+        createdBy: module.createdBy.username,
+        totalSubscribers: module.subscribedUsers?.length || 0
+      }));
+
+      res.status(200).json({
+        status: 'success',
+        data: { modules: transformedModules }
+      });
+    } catch (error) {
+      throw new AppError('Failed to retrieve dashboard modules', 500);
     }
   }
 }

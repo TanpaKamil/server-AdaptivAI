@@ -132,10 +132,10 @@ class UserController {
     async register(req, res) {
         const userData = req.body;
         userData.password = await authHelper.hashPassword(userData.password); // Hash password
-        const newUser = await userService.createUser(userData);
+        await userService.createUser(userData);
         res.status(201).json({
             status: 'success',
-            data: { user: newUser }
+            message: 'Registration successful'
         });
     }
 
