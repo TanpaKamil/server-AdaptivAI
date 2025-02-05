@@ -4,10 +4,52 @@ const User = require('../../models/User');
 const { sampleUser } = require('../fixtures/mockData');
 const { createAuthHeader, generateAuthToken, createTestUser } = require('../helpers/testUtils');
 const path = require('path');
+const fs = require('fs').promises;
 
 describe('Authentication & User Management', () => {
+    let testImagePath;
+
+    // Helper function to create test image
+    async function createTestImage() {
+        const testDir = path.join(__dirname, '../fixtures');
+        await fs.mkdir(testDir, { recursive: true });
+        
+        // Create a minimal valid JPEG file
+        const jpgHeader = Buffer.from([
+            0xFF, 0xD8,                // SOI marker
+            0xFF, 0xE0,                // APP0 marker
+            0x00, 0x10,                // Length of APP0 block
+            0x4A, 0x46, 0x49, 0x46, 0x00, // "JFIF" marker
+            0x01, 0x01,                // Version
+            0x00,                      // Units
+            0x00, 0x01,                // X density
+            0x00, 0x01,                // Y density
+            0x00, 0x00                 // Thumbnail
+        ]);
+
+        testImagePath = path.join(testDir, 'test-image.jpg');
+        await fs.writeFile(testImagePath, jpgHeader);
+        return testImagePath;
+    }
+
+    // Cleanup helper
+    async function cleanupTestFiles() {
+        if (testImagePath) {
+            try {
+                await fs.unlink(testImagePath);
+                testImagePath = null;
+            } catch (error) {
+                console.warn('Error cleaning up test image:', error);
+            }
+        }
+    }
+
     beforeEach(async () => {
         await User.deleteMany({});
+    });
+
+    afterEach(async () => {
+        await cleanupTestFiles();
     });
 
     describe('POST /api/users/register', () => {
@@ -125,14 +167,36 @@ describe('Authentication & User Management', () => {
         });
 
         it('should handle profile image upload', async () => {
-            const imagePath = path.join(__dirname, '../fixtures/test-image.jpg');
+            // Create test image before upload
+            const imagePath = await createTestImage();
+
             const response = await testServer
                 .put(`/api/users/${user._id}`)
                 .set(createAuthHeader(token))
                 .attach('image', imagePath);
 
             expect(response.status).toBe(200);
-            expect(response.body.data.user).toHaveProperty('imageUrl');
+            expect(response.body.data.user.imageUrl).toBeDefined();
+        });
+
+        it('should reject invalid file types', async () => {
+            // Create an invalid file
+            const testDir = path.join(__dirname, '../fixtures');
+            const invalidPath = path.join(testDir, 'invalid.txt');
+            await fs.mkdir(testDir, { recursive: true });
+            await fs.writeFile(invalidPath, 'Not an image');
+
+            try {
+                const response = await testServer
+                    .put(`/api/users/${user._id}`)
+                    .set(createAuthHeader(token))
+                    .attach('image', invalidPath);
+
+                expect(response.status).toBe(400);
+            } finally {
+                // Cleanup invalid file
+                await fs.unlink(invalidPath).catch(console.error);
+            }
         });
     });
 });

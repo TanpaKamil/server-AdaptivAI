@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const { asyncHandler } = require('../middlewares/errorHandler');
 const userController = require('../controllers/userController');
+const authenticate = require('../middlewares/authMiddleware');
 
 // Configure multer for image uploads
 const upload = multer({
@@ -28,8 +29,8 @@ const upload = multer({
 
 // User Routes
 router.post('/', asyncHandler(userController.createUser.bind(userController)));
-router.get('/:userId', asyncHandler(userController.getUser.bind(userController)));
-router.put('/:userId',
+router.get('/:userId', authenticate, asyncHandler(userController.getUser.bind(userController)));
+router.put('/:userId', authenticate,
     upload.single('image'),
     asyncHandler(userController.updateUser.bind(userController))
 );

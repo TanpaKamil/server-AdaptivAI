@@ -1,3 +1,4 @@
+// tests/fixtures/mockData.js
 module.exports = {
     sampleUser: {
       username: 'testuser',
@@ -16,4 +17,5 @@ module.exports = {
       bloomLevel: 1,
       difficultyLevel: 1
     }
+    // Add more mock data as needed
   };

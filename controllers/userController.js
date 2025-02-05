@@ -2,7 +2,8 @@ const userService = require('../services/userService');
 const authHelper = require('../utils/authHelper');
 const { uploadToCloudinary, cloudinary } = require('../config/cloudinary');
 const { cleanupFile } = require('../utils/fileUtils');
-const { asyncHandler } = require('../middlewares/errorHandler');
+const { asyncHandler, AppError } = require('../middlewares/errorHandler');
+const User = require('../models/User');
 
 class UserController {
     // Create a new user
@@ -17,26 +18,31 @@ class UserController {
     }
 
     // Login user
-    async login(req, res) {
-        const { email, password } = req.body;
+    async login(req, res, next) {
+        try {
+            const { email, password } = req.body;
 
-        const user = await userService.getUserByEmail(email); // Assuming you add this method to userService
-        if (!user) {
-            throw new AppError('Invalid email or password', 401);
+            const user = await userService.getUserByEmail(email); // Make sure this method exists.
+            if (!user) {
+                throw new AppError('Invalid email or password', 401);
+            }
+
+            const match = await authHelper.comparePassword(password, user.password);
+            if (!match) {
+                throw new AppError('Invalid email or password', 401);
+            }
+
+            // Generate JWT
+            const token = authHelper.generateToken({ id: user._id, username: user.username });
+
+            res.status(200).json({
+                status: 'success',
+                data: { token }
+            });
+        } catch (error) {
+            // Forward the error so that your error handler can send the correct 401 status.
+            next(error);
         }
-
-        const match = await authHelper.comparePassword(password, user.password);
-        if (!match) {
-            throw new AppError('Invalid email or password', 401);
-        }
-
-        // Generate JWT
-        const token = authHelper.generateToken({ id: user._id, username: user.username });
-
-        res.status(200).json({
-            status: 'success',
-            data: { token }
-        });
     }
 
     // Get user by ID
