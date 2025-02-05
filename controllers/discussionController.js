@@ -143,8 +143,7 @@ class DiscussionController {
         });
     }
 
-    // Add like
-    async addLike(req, res) {
+    async toggleLike(req, res) {
         const { discussionId } = req.params;
         const userId = req.user.id;
         const username = req.user.username;
@@ -155,44 +154,24 @@ class DiscussionController {
             throw new AppError('Discussion not found', 404);
         }
 
-        // Check if user already liked
-        if (discussion.likes.some(like => like.userId.toString() === userId)) {
-            throw new AppError('Already liked this discussion', 400);
-        }
-
-        discussion.likes.push({ userId, username });
-        await discussion.save();
-
-        res.status(200).json({
-            message: "Successfully liked topic"
-        });
-    }
-
-    // Remove like
-    async removeLike(req, res) {
-        const { discussionId, likesId } = req.params;
-        const userId = req.user.id;
-
-        const discussion = await Discussion.findById(discussionId);
-
-        if (!discussion) {
-            throw new AppError('Discussion not found', 404);
-        }
-
-        const likeIndex = discussion.likes.findIndex(
-            like => like._id.toString() === likesId && like.userId.toString() === userId
+        const existingLikeIndex = discussion.likes.findIndex(
+            like => like.userId.toString() === userId
         );
 
-        if (likeIndex === -1) {
-            throw new AppError('Like not found or not authorized', 404);
+        let message;
+        if (existingLikeIndex === -1) {
+            // Add like
+            discussion.likes.push({ userId, username });
+            message = "Successfully liked topic";
+        } else {
+            // Remove like
+            discussion.likes.splice(existingLikeIndex, 1);
+            message = "Successfully unliked topic";
         }
 
-        discussion.likes.splice(likeIndex, 1);
         await discussion.save();
 
-        res.status(200).json({
-            message: "Successfully unlike topic"
-        });
+        res.status(200).json({ message });
     }
 
     // Add comment
@@ -253,10 +232,32 @@ class DiscussionController {
     }
 
     async getFeaturedDiscussions(req, res) {
-        const discussions = await Discussion.find()
-            .select('title content imgUrl comments_length likes_length')
-            .sort('-createdAt')
-            .limit(3);
+        const discussions = await Discussion.aggregate([
+            // Sort by createdAt in descending order
+            { $sort: { createdAt: -1 } },
+            // Limit to 3 documents
+            { $limit: 3 },
+            // Add computed fields
+            {
+                $addFields: {
+                    comments_length: { $size: "$comments" },
+                    likes_length: { $size: "$likes" },
+                    id: { $toString: "$_id" }
+                }
+            },
+            // Project only the fields we want
+            {
+                $project: {
+                    _id: 1,
+                    title: 1,
+                    content: 1,
+                    imgUrl: 1,
+                    comments_length: 1,
+                    likes_length: 1,
+                    id: 1
+                }
+            }
+        ]);
 
         res.status(200).json(discussions);
     }

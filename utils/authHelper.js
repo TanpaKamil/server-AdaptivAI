@@ -16,7 +16,7 @@ class AuthHelper {
 
   generateToken(payload) {
     const secretKey = process.env.JWT_SECRET_KEY;
-    const token = jwt.sign(payload, secretKey, { expiresIn: '1h' }); // Customize expiration as needed
+    const token = jwt.sign(payload, secretKey);
     return token;
   }
 

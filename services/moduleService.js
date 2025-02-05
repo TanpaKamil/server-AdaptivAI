@@ -2197,7 +2197,7 @@ class ModuleService {
 
                 const questions = processAIResponse(questionsResult.response.text(), 'questions');
 
-                // Group questions by Bloom's level
+                // Group questions by Bloom's level and validate
                 const questionsByLevel = questions.reduce((acc, q) => {
                     if (!acc[q.bloomLevel]) acc[q.bloomLevel] = [];
                     acc[q.bloomLevel].push({
@@ -2209,9 +2209,40 @@ class ModuleService {
                     return acc;
                 }, {});
 
-                chapter.levels = Object.entries(questionsByLevel).map(([level, questions]) => ({
-                    bloomLevel: parseInt(level),
-                    questions
+                // Validate Bloom's levels
+                const bloomLevels = Object.keys(questionsByLevel).map(Number);
+                if (bloomLevels.length !== 6) {
+                    console.log(`Invalid number of Bloom's levels: ${bloomLevels.length}. Required: 6`);
+                    throw new Error('Invalid number of Bloom\'s levels');
+                }
+
+                // Validate total questions
+                const totalQuestions = Object.values(questionsByLevel).reduce((sum, questions) => sum + questions.length, 0);
+                if (totalQuestions < 10) {
+                    console.log(`Insufficient number of questions: ${totalQuestions}. Required: 10`);
+                    throw new Error('Insufficient number of questions');
+                }
+
+                // Ensure exactly 10 questions distributed across levels
+                let finalQuestions = [];
+                for (let level = 1; level <= 6; level++) {
+                    const levelQuestions = questionsByLevel[level] || [];
+                    // For levels 1-4, take 2 questions each
+                    // For levels 5-6, take 1 question each
+                    const questionsToTake = level <= 4 ? 2 : 1;
+                    const selectedQuestions = levelQuestions
+                        .slice(0, questionsToTake)
+                        .map(q => ({
+                            ...q,
+                            bloomLevel: level
+                        }));
+                    finalQuestions = [...finalQuestions, ...selectedQuestions];
+                }
+
+                // Structure the levels with validated questions
+                chapter.levels = Array.from({ length: 6 }, (_, i) => ({
+                    bloomLevel: i + 1,
+                    questions: finalQuestions.filter(q => q.bloomLevel === i + 1)
                 }));
 
                 console.log(`✅ Chapter "${chapter.title}" content generated successfully`);
@@ -2220,12 +2251,10 @@ class ModuleService {
             } catch (error) {
                 console.error(`Error generating content for chapter "${chapter.title}" (Attempt ${attempt + 1}):`, error);
 
-                // If we've reached max retries, throw the error
                 if (attempt === maxRetries - 1) {
                     throw new Error(`Failed to generate content for chapter "${chapter.title}" after ${maxRetries} attempts: ${error.message}`);
                 }
 
-                // Wait before retrying (exponential backoff)
                 const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
                 console.log(`Waiting ${delay}ms before retrying...`);
                 await new Promise(resolve => setTimeout(resolve, delay));

@@ -50,9 +50,8 @@ router.put('/:discussionId', upload.single('image'), asyncHandler(discussionCont
 // Delete discussion
 router.delete('/:discussionId', asyncHandler(discussionController.deleteDiscussion));
 
-// Likes routes
-router.patch('/:discussionId/likes', asyncHandler(discussionController.addLike));
-router.delete('/:discussionId/likes/:likesId', asyncHandler(discussionController.removeLike));
+// Like toggle route
+router.patch('/:discussionId/likes', asyncHandler(discussionController.toggleLike));
 
 // Comments routes
 router.patch('/:discussionId/comments', asyncHandler(discussionController.addComment));
