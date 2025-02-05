@@ -9,6 +9,25 @@ const fs = require('fs').promises;
 const path = require('path');
 
 class ModuleController {
+
+  async verifyInstanceOwnership(instance, userId) {
+    if (!instance) {
+      throw new AppError('Module instance not found', 404);
+    }
+    if (instance.userId.toString() !== userId) {
+      throw new AppError('You don\'t have permission to access this instance', 403);
+    }
+  }
+
+  async verifyModuleOwnership(module, userId) {
+    if (!module) {
+      throw new AppError('Module not found', 404);
+    }
+    if (module.createdBy.toString() !== userId) {
+      throw new AppError('You don\'t have permission to modify this module', 403);
+    }
+  }
+
   // Create a new module
   async createModule(req, res) {
     const { title, description, preferredLanguage = 'id' } = req.body;
@@ -53,10 +72,10 @@ class ModuleController {
       }
 
       // Create module with auto-generated content
-      const tempUserId = new mongoose.Types.ObjectId();
+      const userId = req.user.id;
       const module = await moduleService.createModuleWithContent(
         localFilePath,
-        tempUserId,
+        userId,
         title,
         description,
         preferredLanguage,
@@ -108,6 +127,8 @@ class ModuleController {
   async getModuleById(req, res) {
     const module = await ModuleMaster.findById(req.params.moduleId);
 
+    await this.verifyModuleOwnership(module, req.user.id);
+
     if (!module) {
       throw new AppError('Module not found', 404);
     }
@@ -122,12 +143,17 @@ class ModuleController {
   async generateChapterContent(req, res) {
     const { moduleId, chapterId } = req.params;
     const { preferredLanguage = 'id' } = req.body;
-    const tempUserId = new mongoose.Types.ObjectId();
+    const userId = req.user.id;
+
+    const module = await ModuleMaster.findById(moduleId);
+
+    await this.verifyModuleOwnership(module, req.user.id);
+
 
     const chapter = await moduleService.generateChapterContent(
       moduleId,
       chapterId,
-      tempUserId,
+      userId,
       preferredLanguage
     );
 
@@ -146,6 +172,8 @@ class ModuleController {
       throw new AppError('Module not found', 404);
     }
 
+    await this.verifyModuleOwnership(module, req.user.id);
+
     const chapter = module.chapters.id(chapterId);
     if (!chapter) {
       throw new AppError('Chapter not found', 404);
@@ -159,11 +187,11 @@ class ModuleController {
 
   // Start a new module instance
   async startModuleInstance(req, res) {
-    const tempUserId = new mongoose.Types.ObjectId();
+    const userId = req.user.id;
     const { moduleId } = req.params;
 
     // Use service method to create instance with initial question set
-    const instance = await moduleService.startModuleInstance(moduleId, tempUserId);
+    const instance = await moduleService.startModuleInstance(moduleId, userId);
 
     res.status(201).json({
       status: 'success',
@@ -178,6 +206,8 @@ class ModuleController {
         path: 'moduleMasterId',
         select: 'title chapters.title chapters.order'
       });
+
+    await this.verifyInstanceOwnership(instance, req.user.id)
 
     if (!instance) {
       throw new AppError('Module instance not found', 404);
@@ -236,7 +266,13 @@ class ModuleController {
 
     try {
       // Get the instance and current question set
-      const instance = await ModuleInstance.findById(instanceId);
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      });
+
+      await this.verifyInstanceOwnership(instance, req.user.id)
+
       if (!instance) {
         throw new AppError('Module instance not found', 404);
       }
@@ -524,7 +560,10 @@ class ModuleController {
 
     try {
       // Find instance and populate necessary fields
-      const instance = await ModuleInstance.findById(instanceId)
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      })
         .populate({
           path: 'moduleMasterId',
           select: 'title chapters excerpt'
@@ -575,7 +614,10 @@ class ModuleController {
 
     try {
       // Find instance and populate necessary module master data
-      const instance = await ModuleInstance.findById(instanceId)
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      })
         .populate({
           path: 'moduleMasterId',
           populate: {
@@ -585,6 +627,8 @@ class ModuleController {
         })
         .lean();
 
+
+      await this.verifyInstanceOwnership(instance, req.user.id)
       if (!instance) {
         throw new AppError('Module instance not found', 404);
       }
@@ -661,7 +705,10 @@ class ModuleController {
     const { instanceId } = req.params;
 
     try {
-      const instance = await ModuleInstance.findById(instanceId)
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      })
         .populate({
           path: 'moduleMasterId',
           populate: {
@@ -671,6 +718,8 @@ class ModuleController {
             }
           }
         });
+
+      await this.verifyInstanceOwnership(instance, req.user.id)
 
       if (!instance) {
         throw new AppError('Module instance not found', 404);
@@ -722,7 +771,10 @@ class ModuleController {
     const { questionId, userAnswer } = req.body;
 
     try {
-      const instance = await ModuleInstance.findById(instanceId)
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      })
         .populate({
           path: 'moduleMasterId',
           populate: {
@@ -733,6 +785,7 @@ class ModuleController {
           }
         });
 
+      await this.verifyInstanceOwnership(instance, req.user.id)
       if (!instance) {
         throw new AppError('Module instance not found', 404);
       }
@@ -828,8 +881,12 @@ class ModuleController {
     const { questionId, userAnswer } = req.body;
 
     try {
-      const instance = await ModuleInstance.findById(instanceId);
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      });
 
+      await this.verifyInstanceOwnership(instance, req.user.id)
       if (!instance) {
         throw new AppError('Module instance not found', 404);
       }
@@ -895,7 +952,10 @@ class ModuleController {
     const { instanceId, chapterId } = req.params;
 
     try {
-      const instance = await ModuleInstance.findById(instanceId)
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      })
         .populate({
           path: 'moduleMasterId',
           populate: {
@@ -905,6 +965,7 @@ class ModuleController {
           }
         });
 
+      await this.verifyInstanceOwnership(instance, req.user.id)
       if (!instance) {
         throw new AppError('Module instance not found', 404);
       }
@@ -946,9 +1007,13 @@ class ModuleController {
 
     try {
       // Populate the instance with module master data
-      const instance = await ModuleInstance.findById(instanceId)
+      const instance = await ModuleInstance.findOne({
+        _id: instanceId,
+        userId: req.user.id
+      })
         .populate('moduleMasterId', 'chapters');
 
+      await this.verifyInstanceOwnership(instance, req.user.id)
       if (!instance) {
         throw new AppError('Module instance not found', 404);
       }

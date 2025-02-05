@@ -8,7 +8,7 @@ const authenticate = require('../middlewares/authMiddleware');
 const moduleController = new ModuleController();
 
 // ------------------------
-// Public Module Routes
+// Public Module Routes (No Auth Required)
 // ------------------------
 router.get('/pub/featured',
     asyncHandler(moduleController.getFeaturedPublicModules.bind(moduleController))
@@ -26,77 +26,88 @@ router.get('/pub/:moduleId',
     asyncHandler(moduleController.getPublicModuleById.bind(moduleController))
 );
 
+// ------------------------
+// Protected Routes (Auth Required)
+// ------------------------
+
+// Public Module Routes that need auth
 router.post('/pub/:moduleId',
+    authenticate,
     asyncHandler(moduleController.startModuleInstance.bind(moduleController))
 );
 
-// ------------------------
 // Module Instance Routes
-// ------------------------
 router.get('/instances',
+    authenticate,
     asyncHandler(moduleController.getUserInstances.bind(moduleController))
-)
+);
 
 router.get('/instances/:instanceId',
+    authenticate,
     asyncHandler(moduleController.getInstanceProgress.bind(moduleController))
 );
 
 // Assessment Routes
 router.post('/instances/:instanceId/assessment',
+    authenticate,
     asyncHandler(moduleController.submitAssessment.bind(moduleController))
 );
 
 router.get('/instances/:instanceId/assessment',
+    authenticate,
     asyncHandler(moduleController.getNextQuestions.bind(moduleController))
 );
 
 router.put('/instances/:instanceId/assessment',
+    authenticate,
     asyncHandler(moduleController.updateAssessmentAnswer.bind(moduleController))
 );
 
 // Instance Chapter Routes
 router.get('/instances/:instanceId/chapters/:chapterId',
+    authenticate,
     asyncHandler(moduleController.getChapter.bind(moduleController))
 );
 
 router.get('/instances/:instanceId/chapters/:chapterId/levels',
+    authenticate,
     asyncHandler(moduleController.getLevels.bind(moduleController))
 );
 
 router.get('/instances/:instanceId/chapters/:chapterId/feedbacks',
+    authenticate,
     asyncHandler(moduleController.getFeedbacks.bind(moduleController))
 );
 
-
-// ------------------------
 // Module Master Routes
-// ------------------------
-// Create new module (should be before param routes)
 router.post('/',
+    authenticate,
     upload.single('pdf'),
     asyncHandler(moduleController.createModule.bind(moduleController))
 );
 
-// Get all modules
 router.get('/',
+    authenticate,
     asyncHandler(moduleController.getAllModules.bind(moduleController))
 );
 
-// Module-specific routes
 router.get('/:moduleId',
+    authenticate,
     asyncHandler(moduleController.getModuleById.bind(moduleController))
 );
 
 router.post('/:moduleId/start',
+    authenticate,
     asyncHandler(moduleController.startModuleInstance.bind(moduleController))
 );
 
-// Module Chapter Routes
 router.post('/:moduleId/chapters/:chapterId/generate',
+    authenticate,
     asyncHandler(moduleController.generateChapterContent.bind(moduleController))
 );
 
 router.get('/:moduleId/chapters/:chapterId',
+    authenticate,
     asyncHandler(moduleController.getChapterContent.bind(moduleController))
 );
 
