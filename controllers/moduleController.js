@@ -29,75 +29,82 @@ class ModuleController {
     }
   }
 
-  // Create a new module
   async createModule(req, res) {
     const { title, description, preferredLanguage = 'id' } = req.body;
     let cloudinaryResult = null;
     let localFilePath = null;
 
-    // Validate request
-    if (!req.file) {
-      throw new AppError('Please upload a PDF file', 400);
-    }
-
-    localFilePath = path.resolve(req.file.path); // Get absolute path
-
-    // Verify file exists before proceeding
     try {
+      // 1. Validasi file
+      if (!req.file) {
+        throw new AppError('Please upload a PDF file', 400);
+      }
+
+      localFilePath = path.resolve(req.file.path);
+
+      // 2. Verifikasi file
       const stats = await fs.stat(localFilePath);
       if (stats.size === 0) {
         throw new AppError('Uploaded file is empty', 400);
       }
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        throw new AppError('Upload failed: File not found. Please try again.', 400);
-      }
-      throw error;
-    }
 
-    if (!req.file.mimetype || req.file.mimetype !== 'application/pdf') {
-      await cleanupFile(localFilePath);
-      throw new AppError('Invalid file type. Please upload a PDF file', 400);
-    }
-
-    try {
-      // Upload to Cloudinary first
-      try {
-        cloudinaryResult = await uploadToCloudinary(localFilePath);
-        if (!cloudinaryResult || !cloudinaryResult.secure_url) {
-          throw new AppError('Failed to upload file to storage', 500);
-        }
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error:', cloudinaryError);
-        throw new AppError('Failed to upload file: ' + cloudinaryError.message, 500);
+      if (!req.file.mimetype || req.file.mimetype !== 'application/pdf') {
+        await cleanupFile(localFilePath);
+        throw new AppError('Invalid file type. Please upload a PDF file', 400);
       }
 
-      // Create module with auto-generated content
+      // 3. Upload ke Cloudinary
+      cloudinaryResult = await uploadToCloudinary(localFilePath);
+      if (!cloudinaryResult || !cloudinaryResult.secure_url) {
+        throw new AppError('Failed to upload file to storage', 500);
+      }
+
+      // 4. Buat module dengan data minimal
       const userId = req.user.id;
-      const module = await moduleService.createModuleWithContent(
+      const initialModule = await ModuleMaster.create({
+        title: title || 'Module (Processing...)',
+        description: description || 'Content is being generated...',
+        excerpt: 'Content generation in progress...',
+        createdBy: userId,
+        pdfUrl: cloudinaryResult.secure_url,
+        chapters: [],
+        subscribedUsers: [userId],
+        processingStatus: 'processing' // Tambahkan field baru ini ke ModuleMaster schema
+      });
+
+      // 5. Trigger background processing
+      this.triggerContentGeneration(
+        initialModule._id,
         localFilePath,
         userId,
         title,
         description,
-        preferredLanguage,
-        cloudinaryResult.secure_url
-      );
+        preferredLanguage
+      ).catch(error => {
+        console.error('Background processing error:', error);
+        // Update module status to failed
+        ModuleMaster.findByIdAndUpdate(initialModule._id, {
+          processingStatus: 'failed',
+          processingError: error.message
+        }).catch(console.error);
+      });
 
-      // Only clean up the local file after everything is done
-      await cleanupFile(localFilePath);
-
+      // 6. Kirim response success
       res.status(201).json({
         status: 'success',
-        data: { module }
+        message: 'Module upload successful, content generation in progress',
+        data: {
+          moduleId: initialModule._id,
+          processingStatus: 'processing'
+        }
       });
 
     } catch (error) {
-      // If anything fails, clean up both local file and Cloudinary
+      // Cleanup jika terjadi error
       try {
         if (localFilePath) {
           await cleanupFile(localFilePath);
         }
-
         if (cloudinaryResult?.public_id) {
           await cloudinary.uploader.destroy(cloudinaryResult.public_id, { resource_type: 'raw' });
         }
@@ -106,11 +113,48 @@ class ModuleController {
       }
 
       throw new AppError(
-        `Module creation failed: ${error.message}`,
+        `Module upload failed: ${error.message}`,
         error.statusCode || 500
       );
     }
   }
+
+  // Metode untuk memproses konten di background
+  async triggerContentGeneration(moduleId, filePath, userId, title, description, preferredLanguage) {
+    try {
+      // Process in background
+      const updatedModule = await moduleService.createModuleWithContent(
+        filePath,
+        userId,
+        title,
+        description,
+        preferredLanguage,
+        (await ModuleMaster.findById(moduleId)).pdfUrl
+      );
+
+      // Update module with generated content
+      await ModuleMaster.findByIdAndUpdate(moduleId, {
+        title: updatedModule.title,
+        description: updatedModule.description,
+        excerpt: updatedModule.excerpt,
+        chapters: updatedModule.chapters,
+        processingStatus: 'completed'
+      });
+
+      // Cleanup temporary file
+      await cleanupFile(filePath);
+
+    } catch (error) {
+      console.error('Content generation failed:', error);
+      // Update module with error status
+      await ModuleMaster.findByIdAndUpdate(moduleId, {
+        processingStatus: 'failed',
+        processingError: error.message
+      });
+      throw error;
+    }
+  }
+
   // Get all modules with basic info
   async getAllModules(req, res) {
     const modules = await ModuleMaster.find()
@@ -1258,6 +1302,27 @@ class ModuleController {
     } catch (error) {
       throw new AppError(error.message, error.statusCode || 500);
     }
+  }
+  async getModuleProcessingStatus(req, res) {
+    const { moduleId } = req.params;
+
+    const module = await ModuleMaster.findById(moduleId)
+      .select('processingStatus processingError title description');
+
+    if (!module) {
+      throw new AppError('Module not found', 404);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        moduleId: module._id,
+        processingStatus: module.processingStatus,
+        error: module.processingError,
+        title: module.title,
+        description: module.description
+      }
+    });
   }
 }
 

@@ -261,6 +261,15 @@ const ModuleMasterSchema = new mongoose.Schema({
     subscriberCount: {
         type: Number,
         default: 0
+    },
+    processingStatus: {
+        type: String,
+        enum: ['processing', 'completed', 'failed'],
+        default: 'processing'
+    },
+    processingError: {
+        type: String,
+        default: null
     }
 }, {
     timestamps: true,
