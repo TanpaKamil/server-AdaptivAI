@@ -110,7 +110,7 @@ router.get('/:moduleId',
 
 router.get('/:moduleId/status',
     authenticate,
-    asyncHandler(moduleController.getModuleProcessingStatus.bind(moduleController))
+    asyncHandler(moduleController.getModuleStatus.bind(moduleController))
 );
 
 router.post('/:moduleId/start',

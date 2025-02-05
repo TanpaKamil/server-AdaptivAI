@@ -2141,7 +2141,7 @@ class ModuleService {
         return selectedQuestions;
     }
 
-    async generateChapterContentWithRetry(chapter, pdfContent, preferredLanguage, maxRetries = 3) {
+    async generateChapterContentWithRetry(chapter, pdfContent, preferredLanguage, maxRetries = 10) {
         let attempt = 0;
         while (attempt < maxRetries) {
             try {
@@ -2239,17 +2239,11 @@ class ModuleService {
         try {
             console.log('\n=== Starting Module Creation with Content Generation ===');
 
-            // 1. Verify the PDF file exists and is not empty
-            const stats = await fs.stat(pdfPath);
-            if (stats.size === 0) {
-                throw new AppError('PDF file is empty', 400);
-            }
-
-            // 2. Read the file
+            // 1. Read and validate PDF file
             const fileBuffer = await fs.readFile(pdfPath);
             const base64Data = fileBuffer.toString('base64');
 
-            // 3. Generate initial metadata and chapter structure
+            // 2. Generate metadata and chapter structure in parallel
             console.log('Generating initial metadata and chapter structure...');
             const [metadataResult, chapterResult] = await Promise.all([
                 this.model.generateContent({
@@ -2280,11 +2274,15 @@ class ModuleService {
                 })
             ]);
 
-            // 4. Process initial responses
+            // 3. Process responses
             const metadata = processAIResponse(metadataResult.response.text(), 'metadata');
             const chapters = processAIResponse(chapterResult.response.text(), 'chapters');
 
-            // 5. Create initial module structure
+            // 4. Create unique identifier
+            const uniqueIdentifier = `${userId}_${Date.now()}`;
+
+            // 5. Create module structure
+            console.log('Creating module structure...');
             const moduleData = {
                 title: title || metadata.title,
                 description: description || metadata.description,
@@ -2298,25 +2296,23 @@ class ModuleService {
                     summaries: [],
                     levels: []
                 })),
-                subscribedUsers: [userId]
+                subscribedUsers: [userId],
+                status: 'completed',
+                uniqueIdentifier // Add the uniqueIdentifier field
             };
 
-            // 6. Create initial module in database
-            console.log('Creating initial module structure...');
+            // 6. Create and save module with complete data
             const createdModule = await ModuleMaster.create(moduleData);
 
-            // 7. Generate content for each chapter with progressive saving
+            // 7. Generate content for each chapter
             console.log(`\nGenerating content for ${chapters.length} chapters...`);
             for (let i = 0; i < createdModule.chapters.length; i++) {
                 const chapter = createdModule.chapters[i];
                 await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
 
-                // Save progress after each successful chapter generation
+                // Save progress after each chapter
                 await ModuleMaster.updateOne(
-                    {
-                        _id: createdModule._id,
-                        'chapters._id': chapter._id
-                    },
+                    { _id: createdModule._id, 'chapters._id': chapter._id },
                     {
                         $set: {
                             'chapters.$.summaries': chapter.summaries,
@@ -2326,14 +2322,10 @@ class ModuleService {
                 );
             }
 
-            // 8. Fetch and return the complete module
-            const completedModule = await ModuleMaster.findById(createdModule._id);
-
-            console.log('=== Module Creation Complete ===');
-            return completedModule;
+            // 8. Return completed module
+            return await ModuleMaster.findById(createdModule._id);
 
         } catch (error) {
-            // Don't clean up the file here, let the controller handle it
             console.error('Error in createModuleWithContent:', error);
             throw new AppError(`Failed to create module with content: ${error.message}`, error.statusCode || 500);
         }

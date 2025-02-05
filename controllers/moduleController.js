@@ -35,72 +35,70 @@ class ModuleController {
     let localFilePath = null;
 
     try {
-      // 1. Validasi file
+      // 1. Initial validations
       if (!req.file) {
         throw new AppError('Please upload a PDF file', 400);
       }
 
       localFilePath = path.resolve(req.file.path);
 
-      // 2. Verifikasi file
+      // 2. Quick validations
       const stats = await fs.stat(localFilePath);
       if (stats.size === 0) {
         throw new AppError('Uploaded file is empty', 400);
       }
 
       if (!req.file.mimetype || req.file.mimetype !== 'application/pdf') {
-        await cleanupFile(localFilePath);
         throw new AppError('Invalid file type. Please upload a PDF file', 400);
       }
 
-      // 3. Upload ke Cloudinary
+      // 3. Upload to Cloudinary
       cloudinaryResult = await uploadToCloudinary(localFilePath);
       if (!cloudinaryResult || !cloudinaryResult.secure_url) {
         throw new AppError('Failed to upload file to storage', 500);
       }
 
-      // 4. Buat module dengan data minimal
+      // 4. Create initial module with minimal data but with a unique constraint
       const userId = req.user.id;
+
+      // Add a unique identifier to prevent duplicates
+      const uniqueIdentifier = `${userId}_${Date.now()}`;
+
       const initialModule = await ModuleMaster.create({
-        title: title || 'Module (Processing...)',
-        description: description || 'Content is being generated...',
-        excerpt: 'Content generation in progress...',
+        title: title || 'Processing...',
+        description: description || 'Module is being processed...',
+        excerpt: 'Module content is being generated...',
         createdBy: userId,
         pdfUrl: cloudinaryResult.secure_url,
-        chapters: [],
+        status: 'processing',
         subscribedUsers: [userId],
-        processingStatus: 'processing' // Tambahkan field baru ini ke ModuleMaster schema
+        chapters: [],
+        uniqueIdentifier // Add this field to ModuleMaster schema
       });
 
-      // 5. Trigger background processing
-      this.triggerContentGeneration(
+      // 5. Return early with initial module data
+      res.status(201).json({
+        status: 'success',
+        message: 'Module creation started',
+        data: {
+          moduleId: initialModule._id,
+          status: 'processing'
+        }
+      });
+
+      // 6. Continue processing in background
+      await this.processModuleInBackground(
         initialModule._id,
         localFilePath,
         userId,
         title,
         description,
-        preferredLanguage
-      ).catch(error => {
-        console.error('Background processing error:', error);
-        // Update module status to failed
-        ModuleMaster.findByIdAndUpdate(initialModule._id, {
-          processingStatus: 'failed',
-          processingError: error.message
-        }).catch(console.error);
-      });
-
-      // 6. Kirim response success
-      res.status(201).json({
-        status: 'success',
-        message: 'Module upload successful, content generation in progress',
-        data: {
-          moduleId: initialModule._id,
-          processingStatus: 'processing'
-        }
-      });
+        preferredLanguage,
+        cloudinaryResult.secure_url
+      );
 
     } catch (error) {
-      // Cleanup jika terjadi error
+      // Clean up on error
       try {
         if (localFilePath) {
           await cleanupFile(localFilePath);
@@ -113,47 +111,78 @@ class ModuleController {
       }
 
       throw new AppError(
-        `Module upload failed: ${error.message}`,
+        `Module creation failed: ${error.message}`,
         error.statusCode || 500
       );
     }
   }
 
-  // Metode untuk memproses konten di background
-  async triggerContentGeneration(moduleId, filePath, userId, title, description, preferredLanguage) {
+  // Modified background processing method
+  async processModuleInBackground(
+    moduleId,
+    pdfPath,
+    userId,
+    title,
+    description,
+    preferredLanguage,
+    pdfUrl
+  ) {
     try {
-      // Process in background
-      const updatedModule = await moduleService.createModuleWithContent(
-        filePath,
+      // Generate module content
+      const moduleContent = await moduleService.createModuleWithContent(
+        pdfPath,
         userId,
         title,
         description,
         preferredLanguage,
-        (await ModuleMaster.findById(moduleId)).pdfUrl
+        pdfUrl
       );
 
-      // Update module with generated content
-      await ModuleMaster.findByIdAndUpdate(moduleId, {
-        title: updatedModule.title,
-        description: updatedModule.description,
-        excerpt: updatedModule.excerpt,
-        chapters: updatedModule.chapters,
-        processingStatus: 'completed'
-      });
+      // Update the existing module with generated content using findOneAndUpdate
+      const updatedModule = await ModuleMaster.findOneAndUpdate(
+        { _id: moduleId, status: 'processing' }, // Only update if status is still 'processing'
+        {
+          $set: {
+            title: moduleContent.title,
+            description: moduleContent.description,
+            excerpt: moduleContent.excerpt,
+            chapters: moduleContent.chapters,
+            status: 'completed'
+          }
+        },
+        { new: true }
+      );
 
-      // Cleanup temporary file
-      await cleanupFile(filePath);
+      if (!updatedModule) {
+        console.error('Module not found or already processed:', moduleId);
+      }
+
+      // Clean up the temporary file
+      await cleanupFile(pdfPath);
 
     } catch (error) {
-      console.error('Content generation failed:', error);
-      // Update module with error status
-      await ModuleMaster.findByIdAndUpdate(moduleId, {
-        processingStatus: 'failed',
-        processingError: error.message
-      });
-      throw error;
+      console.error('Error in background processing:', error);
+
+      // Update module status to error, only if it's still in processing state
+      await ModuleMaster.findOneAndUpdate(
+        { _id: moduleId, status: 'processing' },
+        {
+          $set: {
+            status: 'error',
+            errorMessage: error.message
+          }
+        }
+      );
+
+      // Clean up
+      try {
+        await cleanupFile(pdfPath);
+      } catch (cleanupError) {
+        console.error('Cleanup error:', cleanupError);
+      }
     }
   }
+
 
   // Get all modules with basic info
   async getAllModules(req, res) {
@@ -1303,11 +1332,11 @@ class ModuleController {
       throw new AppError(error.message, error.statusCode || 500);
     }
   }
-  async getModuleProcessingStatus(req, res) {
+  async getModuleStatus(req, res) {
     const { moduleId } = req.params;
 
     const module = await ModuleMaster.findById(moduleId)
-      .select('processingStatus processingError title description');
+      .select('status title description errorMessage');
 
     if (!module) {
       throw new AppError('Module not found', 404);
@@ -1317,10 +1346,10 @@ class ModuleController {
       status: 'success',
       data: {
         moduleId: module._id,
-        processingStatus: module.processingStatus,
-        error: module.processingError,
+        status: module.status,
         title: module.title,
-        description: module.description
+        description: module.description,
+        errorMessage: module.errorMessage
       }
     });
   }
