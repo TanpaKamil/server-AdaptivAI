@@ -39,6 +39,8 @@ router.get('/', asyncHandler(discussionController.getAllDiscussions));
 // Create new discussion
 router.post('/', upload.single('image'), asyncHandler(discussionController.createDiscussion));
 
+router.get('/featured', asyncHandler(discussionController.getFeaturedDiscussions));
+
 // Get discussion detail
 router.get('/:discussionId', asyncHandler(discussionController.getDiscussionDetail));
 

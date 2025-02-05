@@ -242,6 +242,15 @@ class DiscussionController {
             message: "Comment has been deleted"
         });
     }
+
+    async getFeaturedDiscussions(req, res) {
+        const discussions = await Discussion.find()
+            .select('title content imgUrl comments_length likes_length')
+            .sort('-createdAt')
+            .limit(3);
+
+        res.status(200).json(discussions);
+    }
 }
 
 module.exports = new DiscussionController();
