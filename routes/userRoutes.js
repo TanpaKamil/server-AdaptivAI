@@ -26,7 +26,7 @@ const upload = multer({
         fileSize: 5 * 1024 * 1024 // 5MB limit
     }
 });
-
+router.get('/profile', authenticate, asyncHandler(userController.getProfile.bind(userController)));
 // User Routes
 router.post('/', asyncHandler(userController.createUser.bind(userController)));
 router.get('/:userId', authenticate, asyncHandler(userController.getUser.bind(userController)));
@@ -34,6 +34,7 @@ router.put('/:userId', authenticate,
     upload.single('image'),
     asyncHandler(userController.updateUser.bind(userController))
 );
+
 router.post('/login', asyncHandler(userController.login.bind(userController)));
 router.post('/register', asyncHandler(userController.register.bind(userController)));
 

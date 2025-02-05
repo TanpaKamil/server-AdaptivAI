@@ -4,6 +4,7 @@ const { cleanupFile } = require('../utils/fileUtils');
 const { AppError } = require('../middlewares/errorHandler');
 const { ModuleMaster } = require('../models/ModuleMaster');
 const { ModuleInstance } = require('../models/ModuleInstance');
+const { User } = require('../models/User');
 const mongoose = require('mongoose');
 const fs = require('fs').promises;
 const path = require('path');
@@ -462,23 +463,39 @@ class ModuleController {
       // Get total count for pagination
       const totalModules = await ModuleMaster.countDocuments(searchQuery);
 
+      // Debug: Log the query being used
+      console.log('Search Query:', searchQuery);
+
       const modules = await ModuleMaster.find(searchQuery)
-        .select('title description excerpt createdBy subscribedUsers createdAt metadata')
-        .populate('createdBy', 'username')
+        .select('title description excerpt createdBy subscribedUsers createdAt')
+        .populate({
+          path: 'createdBy',
+          select: 'username'
+        })
         .sort('-createdAt')
         .skip((page - 1) * limit)
         .limit(limit);
 
-      const transformedModules = modules.map(module => ({
-        _id: module._id,
-        title: module.title,
-        description: module.description,
-        excerpt: module.excerpt,
-        createdBy: module.createdBy,
-        totalSubscribers: module.subscribedUsers?.length || 0,
-        createdAt: module.createdAt,
-        metadata: module.metadata
-      }));
+      // Debug: Log raw modules data
+      console.log('Raw Modules Data:', JSON.stringify(modules, null, 2));
+
+      const transformedModules = modules.map(module => {
+        // Debug: Log each module before transformation
+        console.log('Module before transform:', module);
+
+        return {
+          _id: module._id,
+          title: module.title,
+          description: module.description,
+          excerpt: module.excerpt,
+          createdBy: module.createdBy?.username || 'Unknown User',
+          totalSubscribers: module.subscribedUsers?.length || 0,
+          createdAt: module.createdAt
+        };
+      });
+
+      // Debug: Log transformed modules
+      console.log('Transformed Modules:', JSON.stringify(transformedModules, null, 2));
 
       res.status(200).json({
         status: 'success',
@@ -492,6 +509,7 @@ class ModuleController {
         }
       });
     } catch (error) {
+      console.error('Error in getAllPublicModules:', error);
       throw new AppError('Failed to retrieve public modules', 500);
     }
   }

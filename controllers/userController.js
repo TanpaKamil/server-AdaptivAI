@@ -145,7 +145,34 @@ class UserController {
         });
     }
 
+    async getProfile(req, res) {
+        try {
+            // Get user ID from authenticated request
+            const userId = req.user.id;
 
+            // Get complete user data
+            const user = await userService.getUserById(userId);
+
+            // Transform response
+            const userProfile = {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                role: user.role,
+                imageUrl: user.imageUrl,
+                modules: user.modules,
+                lastActive: user.lastActive
+            };
+
+            res.status(200).json({
+                status: 'success',
+                data: { user: userProfile }
+            });
+        } catch (error) {
+            console.error('Error in getProfile:', error);
+            throw new AppError(error.message || 'Failed to get user profile', error.statusCode || 500);
+        }
+    }
     // Add more methods as needed (e.g., deleteUser, changePassword)
 }
 
