@@ -26,53 +26,44 @@ class ModuleService {
 
     async getPDFContent(pdfUrl) {
         try {
-            // Parse the Cloudinary URL components
-            const urlParts = pdfUrl.split('/');
-            const version = urlParts.find(part => part.startsWith('v'));
-            const folder = 'adaptive-learning';
-            const filename = urlParts[urlParts.length - 1];
-            const publicId = `${folder}/${filename.replace('.pdf', '')}`;
-
-            // Generate authentication parameters
-            const timestamp = Math.round(new Date().getTime() / 1000);
-            const params = {
-                timestamp: timestamp,
-                public_id: publicId,
-                resource_type: 'raw',
-                type: 'upload',
-                version: version?.replace('v', '')
-            };
-
-            // Generate signature
-            const signature = cloudinary.utils.api_sign_request(
-                params,
-                process.env.CLOUDINARY_API_SECRET
-            );
-
-            // Construct secure download URL
-            const downloadUrl = cloudinary.url(publicId, {
-                resource_type: 'raw',
-                type: 'upload',
-                version: version?.replace('v', ''),
-                timestamp: timestamp,
-                signature: signature,
-                secure: true,
-                format: 'pdf'
-            });
-
-            // Fetch the PDF
-            const response = await axios.get(downloadUrl, {
+            if (!pdfUrl) {
+                throw new AppError('PDF URL is required', 400);
+            }
+    
+            // Log the URL we're trying to fetch
+            console.log('Attempting to fetch PDF from:', pdfUrl);
+    
+            // Simple direct fetch using axios
+            const response = await axios({
+                method: 'get',
+                url: pdfUrl,
                 responseType: 'arraybuffer',
                 headers: {
-                    'Accept': 'application/pdf'
-                }
+                    'Accept': '*/*'  // Accept any content type
+                },
+                // Add timeout and maxContentLength
+                timeout: 30000, // 30 seconds
+                maxContentLength: 50 * 1024 * 1024 // 50MB max
             });
-
-            // Convert to base64
+    
+            if (!response.data) {
+                throw new AppError('Empty response received', 500);
+            }
+    
             return Buffer.from(response.data).toString('base64');
+    
         } catch (error) {
-            console.error('Error fetching PDF content:', error);
-            throw new AppError(`Failed to fetch PDF content: ${error.message}`, 500);
+            console.error('Error details:', {
+                message: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                headers: error.response?.headers
+            });
+    
+            throw new AppError(
+                `Failed to fetch PDF: ${error.message}`,
+                error.response?.status || 500
+            );
         }
     }
 
@@ -2264,7 +2255,7 @@ class ModuleService {
         }
     }
 
-    async createModuleWithContent(pdfPath, userId, title, description, preferredLanguage, pdfUrl, existingModuleId) {
+    async createModuleWithContent(pdfPath, userId, additionalNotes, preferredLanguage, pdfUrl, existingModuleId) {
         try {
             console.log('\n=== Starting Module Content Generation ===');
             console.log('Existing Module ID:', existingModuleId);
@@ -2280,7 +2271,7 @@ class ModuleService {
                     contents: [{
                         role: 'user',
                         parts: [{
-                            text: `Language: ${preferredLanguage}\n${MODULE_METADATA_PROMPT}`
+                            text: `Language: ${preferredLanguage}\n${additionalNotes ? `Additional Context: ${additionalNotes}\n` : ''}${MODULE_METADATA_PROMPT}`
                         }, {
                             inlineData: {
                                 mimeType: "application/pdf",
@@ -2293,7 +2284,7 @@ class ModuleService {
                     contents: [{
                         role: 'user',
                         parts: [{
-                            text: `Language: ${preferredLanguage}\n${CHAPTER_IDENTIFICATION_PROMPT}`
+                            text: `Language: ${preferredLanguage}\n${additionalNotes ? `Additional Context: ${additionalNotes}\n` : ''}${CHAPTER_IDENTIFICATION_PROMPT}`
                         }, {
                             inlineData: {
                                 mimeType: "application/pdf",
@@ -2317,13 +2308,13 @@ class ModuleService {
                 levels: []
             }));
 
-            // 5. Update existing module instead of creating new one
+            // 5. Update existing module with metadata from AI
             const updatedModule = await ModuleMaster.findByIdAndUpdate(
                 existingModuleId,
                 {
                     $set: {
-                        title: title || metadata.title,
-                        description: description || metadata.description,
+                        title: metadata.title,
+                        description: metadata.description,
                         excerpt: chapters[0]?.excerpt || metadata.excerpt,
                         chapters: chapterData,
                         status: 'completed'
@@ -2336,25 +2327,45 @@ class ModuleService {
                 throw new AppError('Failed to update module', 500);
             }
 
-            // 6. Generate content for each chapter
+            // Rest of the method remains the same...
             console.log(`\nGenerating content for ${chapters.length} chapters...`);
             for (let i = 0; i < updatedModule.chapters.length; i++) {
                 const chapter = updatedModule.chapters[i];
-                await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
 
-                // Save progress after each chapter
-                await ModuleMaster.updateOne(
-                    { _id: updatedModule._id, 'chapters._id': chapter._id },
-                    {
-                        $set: {
-                            'chapters.$.summaries': chapter.summaries,
-                            'chapters.$.levels': chapter.levels
+                try {
+                    await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
+
+                    await ModuleMaster.updateOne(
+                        { _id: updatedModule._id, 'chapters._id': chapter._id },
+                        {
+                            $set: {
+                                'chapters.$.summaries': chapter.summaries,
+                                'chapters.$.levels': chapter.levels
+                            }
+                        }
+                    );
+
+                } catch (error) {
+                    console.error(`Error generating content for chapter ${i + 1}:`, error);
+                    throw error;
+                } finally {
+                    if (i === 0) {
+                        console.log('\nCreating initial module instance after first chapter...');
+                        try {
+                            const currentModule = await ModuleMaster.findById(updatedModule._id);
+                            if (currentModule.chapters[0].summaries.length > 0 && currentModule.chapters[0].levels.length > 0) {
+                                await this.startModuleInstance(updatedModule._id, userId);
+                                console.log('✅ Initial instance created successfully');
+                            } else {
+                                console.log('⚠️ Skipping instance creation: First chapter content not fully generated');
+                            }
+                        } catch (instanceError) {
+                            console.error('Error creating initial instance:', instanceError);
                         }
                     }
-                );
+                }
             }
 
-            // 7. Return updated module
             return await ModuleMaster.findById(updatedModule._id);
 
         } catch (error) {
@@ -2363,5 +2374,4 @@ class ModuleService {
         }
     }
 }
-
 module.exports = new ModuleService();

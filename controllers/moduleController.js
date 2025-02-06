@@ -30,7 +30,7 @@ class ModuleController {
   }
 
   async createModule(req, res) {
-    const { title, description, preferredLanguage = 'id' } = req.body;
+    const { additionalNotes, preferredLanguage = 'id' } = req.body;
     let cloudinaryResult = null;
     let localFilePath = null;
 
@@ -60,20 +60,18 @@ class ModuleController {
 
       // 4. Create initial module with minimal data but with a unique constraint
       const userId = req.user.id;
-
-      // Add a unique identifier to prevent duplicates
       const uniqueIdentifier = `${userId}_${Date.now()}`;
 
       const initialModule = await ModuleMaster.create({
-        title: title || 'Processing...',
-        description: description || 'Module is being processed...',
+        title: 'Processing...',
+        description: 'Module is being processed...',
         excerpt: 'Module content is being generated...',
         createdBy: userId,
         pdfUrl: cloudinaryResult.secure_url,
         status: 'processing',
         subscribedUsers: [userId],
         chapters: [],
-        uniqueIdentifier // Add this field to ModuleMaster schema
+        uniqueIdentifier
       });
 
       // 5. Return early with initial module data
@@ -91,10 +89,10 @@ class ModuleController {
         initialModule._id,
         localFilePath,
         userId,
-        title,
-        description,
+        additionalNotes, // Pass additionalNotes instead of title/description
         preferredLanguage,
-        cloudinaryResult.secure_url
+        cloudinaryResult.secure_url,
+        initialModule._id
       );
 
     } catch (error) {
@@ -121,48 +119,46 @@ class ModuleController {
     moduleId,
     pdfPath,
     userId,
-    title,
-    description,
+    additionalNotes,
     preferredLanguage,
     pdfUrl
-  ) {
+) {
     try {
-      // Generate module content, passing the existing module ID
-      const moduleContent = await moduleService.createModuleWithContent(
-        pdfPath,
-        userId,
-        title,
-        description,
-        preferredLanguage,
-        pdfUrl,
-        moduleId  // Pass the existing module ID
-      );
+        // Generate module content, passing the existing module ID
+        const moduleContent = await moduleService.createModuleWithContent(
+            pdfPath,
+            userId,
+            additionalNotes,  // Pass additionalNotes instead of title/description
+            preferredLanguage,
+            pdfUrl,
+            moduleId  // Pass the existing module ID
+        );
 
-      // Clean up the temporary file
-      await cleanupFile(pdfPath);
+        // Clean up the temporary file
+        await cleanupFile(pdfPath);
 
     } catch (error) {
-      console.error('Error in background processing:', error);
+        console.error('Error in background processing:', error);
 
-      // Update module status to error, only if it's still in processing state
-      await ModuleMaster.findOneAndUpdate(
-        { _id: moduleId, status: 'processing' },
-        {
-          $set: {
-            status: 'error',
-            errorMessage: error.message
-          }
+        // Update module status to error, only if it's still in processing state
+        await ModuleMaster.findOneAndUpdate(
+            { _id: moduleId, status: 'processing' },
+            {
+                $set: {
+                    status: 'error',
+                    errorMessage: error.message
+                }
+            }
+        );
+
+        // Clean up
+        try {
+            await cleanupFile(pdfPath);
+        } catch (cleanupError) {
+            console.error('Cleanup error:', cleanupError);
         }
-      );
-
-      // Clean up
-      try {
-        await cleanupFile(pdfPath);
-      } catch (cleanupError) {
-        console.error('Cleanup error:', cleanupError);
-      }
     }
-  }
+}
 
   // Get all modules with basic info
   async getAllModules(req, res) {
@@ -447,7 +443,7 @@ class ModuleController {
   async getFeaturedPublicModules(req, res) {
     try {
       const featuredModules = await ModuleMaster.find({ isActive: true })
-        .limit(3)
+        .limit(4)
         .select('title excerpt createdBy subscribedUsers')
         .populate('createdBy', 'username')
         .sort({ 'subscribedUsers': -1, 'createdAt': -1 });
@@ -1000,57 +996,98 @@ class ModuleController {
     const { page = 1, limit = 10, bloomLevel } = req.query;
 
     try {
-      const instance = await ModuleInstance.findOne({
-        _id: instanceId,
-        userId: req.user.id
-      })
-        .populate({
-          path: 'moduleMasterId',
-          populate: {
-            path: 'chapters',
-            match: { _id: chapterId },
-            select: 'levels title' // Added title
-          }
+        const instance = await ModuleInstance.findOne({
+            _id: instanceId,
+            userId: req.user.id
+        })
+            .populate({
+                path: 'moduleMasterId',
+                populate: {
+                    path: 'chapters',
+                    match: { _id: chapterId },
+                    select: 'levels title'
+                }
+            });
+
+        await this.verifyInstanceOwnership(instance, req.user.id);
+        
+        if (!instance) {
+            throw new AppError('Module instance not found', 404);
+        }
+
+        if (!instance.moduleMasterId?.chapters?.length) {
+            throw new AppError('Chapter not found', 404);
+        }
+
+        const chapter = instance.moduleMasterId.chapters[0];
+
+        // Filter levels by bloomLevel if provided
+        let filteredLevels = chapter.levels;
+        if (bloomLevel) {
+            filteredLevels = chapter.levels.filter(l => l.bloomLevel === parseInt(bloomLevel));
+        }
+
+        // Calculate total questions across all filtered levels
+        const totalQuestions = filteredLevels.reduce((sum, level) => 
+            sum + level.questions.length, 0
+        );
+
+        // Calculate total levels
+        const totalLevels = chapter.levels.length;
+
+        // Paginate questions
+        const startIndex = (parseInt(page) - 1) * parseInt(limit);
+        const endIndex = startIndex + parseInt(limit);
+
+        // Flatten questions from all levels and paginate
+        const allQuestions = filteredLevels.reduce((acc, level) => {
+            return acc.concat(level.questions.map(q => ({
+                ...q.toObject(),
+                bloomLevel: level.bloomLevel
+            })));
+        }, []);
+
+        const paginatedQuestions = allQuestions.slice(startIndex, endIndex);
+
+        // Group paginated questions by level
+        const paginatedLevels = paginatedQuestions.reduce((acc, question) => {
+            const levelIndex = acc.findIndex(l => l.bloomLevel === question.bloomLevel);
+            if (levelIndex === -1) {
+                acc.push({
+                    bloomLevel: question.bloomLevel,
+                    questions: [question]
+                });
+            } else {
+                acc[levelIndex].questions.push(question);
+            }
+            return acc;
+        }, []);
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                instanceId: instanceId,
+                chapterId: chapterId,
+                chapterTitle: chapter.title,
+                levels: paginatedLevels,
+                pagination: {
+                    currentPage: parseInt(page),
+                    totalPages: Math.ceil(totalQuestions / limit),
+                    totalQuestions,
+                    questionsPerPage: parseInt(limit),
+                    totalLevels
+                },
+                filters: {
+                    bloomLevel: bloomLevel ? parseInt(bloomLevel) : null,
+                    availableBloomLevels: [...new Set(chapter.levels.map(l => l.bloomLevel))]
+                }
+            }
         });
 
-      await this.verifyInstanceOwnership(instance, req.user.id)
-      if (!instance) {
-        throw new AppError('Module instance not found', 404);
-      }
-
-      if (!instance.moduleMasterId?.chapters?.length) {
-        throw new AppError('Chapter not found', 404);
-      }
-
-      const chapter = instance.moduleMasterId.chapters[0];
-
-      // Rest of the code remains same until response...
-
-      res.status(200).json({
-        status: 'success',
-        data: {
-          instanceId: instanceId,     // Added
-          chapterId: chapterId,       // Added
-          chapterTitle: chapter.title, // Added chapter title
-          levels: paginatedLevels,
-          pagination: {
-            currentPage: parseInt(page),
-            totalPages: Math.ceil(totalQuestions / limit),
-            totalQuestions,
-            questionsPerPage: parseInt(limit),
-            totalLevels
-          },
-          filters: {
-            bloomLevel: bloomLevel ? parseInt(bloomLevel) : null,
-            availableBloomLevels: [...new Set(chapter.levels.map(l => l.bloomLevel))]
-          }
-        }
-      });
-
     } catch (error) {
-      throw new AppError(error.message, error.statusCode || 500);
+        throw new AppError(error.message, error.statusCode || 500);
     }
-  }
+}
 
   async getFeedbacks(req, res) {
     const { instanceId, chapterId } = req.params;

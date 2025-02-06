@@ -7,9 +7,18 @@ const { uploadToCloudinary } = require('../config/cloudinary'); // Make sure thi
 class DiscussionController {
     // Get all discussions
     async getAllDiscussions(req, res) {
-        const discussions = await Discussion.find()
-            .select('title content imgUrl comments_length likes_length')
-            .sort('-createdAt');
+        const discussions = await Discussion.aggregate([
+            {
+                $project: {
+                    title: 1,
+                    content: 1,
+                    imgUrl: 1,
+                    comments_length: { $size: "$comments" },
+                    likes_length: { $size: "$likes" }
+                }
+            },
+            { $sort: { createdAt: -1 } }
+        ]);
 
         res.status(200).json(discussions);
     }

@@ -6,17 +6,16 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const uploadToCloudinary = async (filePath, type = 'raw') => {
+const uploadToCloudinary = async (filePath, type = 'image') => {
     try {
         const options = {
             folder: 'adaptive-learning',
+            resource_type: type === 'image' ? 'image' : 'raw',
             public_id: `${type}-${Date.now()}`
         };
 
-        if (type === 'image') {
-            options.resource_type = 'image';
-        } else {
-            options.resource_type = 'raw';
+        // Jika tipe adalah PDF, set format ke PDF
+        if (type !== 'image') {
             options.format = 'pdf';
         }
 
