@@ -26,53 +26,44 @@ class ModuleService {
 
     async getPDFContent(pdfUrl) {
         try {
-            // Parse the Cloudinary URL components
-            const urlParts = pdfUrl.split('/');
-            const version = urlParts.find(part => part.startsWith('v'));
-            const folder = 'adaptive-learning';
-            const filename = urlParts[urlParts.length - 1];
-            const publicId = `${folder}/${filename.replace('.pdf', '')}`;
-
-            // Generate authentication parameters
-            const timestamp = Math.round(new Date().getTime() / 1000);
-            const params = {
-                timestamp: timestamp,
-                public_id: publicId,
-                resource_type: 'raw',
-                type: 'upload',
-                version: version?.replace('v', '')
-            };
-
-            // Generate signature
-            const signature = cloudinary.utils.api_sign_request(
-                params,
-                process.env.CLOUDINARY_API_SECRET
-            );
-
-            // Construct secure download URL
-            const downloadUrl = cloudinary.url(publicId, {
-                resource_type: 'raw',
-                type: 'upload',
-                version: version?.replace('v', ''),
-                timestamp: timestamp,
-                signature: signature,
-                secure: true,
-                format: 'pdf'
-            });
-
-            // Fetch the PDF
-            const response = await axios.get(downloadUrl, {
+            if (!pdfUrl) {
+                throw new AppError('PDF URL is required', 400);
+            }
+    
+            // Log the URL we're trying to fetch
+            console.log('Attempting to fetch PDF from:', pdfUrl);
+    
+            // Simple direct fetch using axios
+            const response = await axios({
+                method: 'get',
+                url: pdfUrl,
                 responseType: 'arraybuffer',
                 headers: {
-                    'Accept': 'application/pdf'
-                }
+                    'Accept': '*/*'  // Accept any content type
+                },
+                // Add timeout and maxContentLength
+                timeout: 30000, // 30 seconds
+                maxContentLength: 50 * 1024 * 1024 // 50MB max
             });
-
-            // Convert to base64
+    
+            if (!response.data) {
+                throw new AppError('Empty response received', 500);
+            }
+    
             return Buffer.from(response.data).toString('base64');
+    
         } catch (error) {
-            console.error('Error fetching PDF content:', error);
-            throw new AppError(`Failed to fetch PDF content: ${error.message}`, 500);
+            console.error('Error details:', {
+                message: error.message,
+                status: error.response?.status,
+                statusText: error.response?.statusText,
+                headers: error.response?.headers
+            });
+    
+            throw new AppError(
+                `Failed to fetch PDF: ${error.message}`,
+                error.response?.status || 500
+            );
         }
     }
 
@@ -2141,7 +2132,7 @@ class ModuleService {
         return selectedQuestions;
     }
 
-    async generateChapterContentWithRetry(chapter, pdfContent, preferredLanguage, maxRetries = 3) {
+    async generateChapterContentWithRetry(chapter, pdfContent, preferredLanguage, maxRetries = 10) {
         let attempt = 0;
         while (attempt < maxRetries) {
             try {
@@ -2197,7 +2188,7 @@ class ModuleService {
 
                 const questions = processAIResponse(questionsResult.response.text(), 'questions');
 
-                // Group questions by Bloom's level
+                // Group questions by Bloom's level and validate
                 const questionsByLevel = questions.reduce((acc, q) => {
                     if (!acc[q.bloomLevel]) acc[q.bloomLevel] = [];
                     acc[q.bloomLevel].push({
@@ -2209,9 +2200,40 @@ class ModuleService {
                     return acc;
                 }, {});
 
-                chapter.levels = Object.entries(questionsByLevel).map(([level, questions]) => ({
-                    bloomLevel: parseInt(level),
-                    questions
+                // Validate Bloom's levels
+                const bloomLevels = Object.keys(questionsByLevel).map(Number);
+                if (bloomLevels.length !== 6) {
+                    console.log(`Invalid number of Bloom's levels: ${bloomLevels.length}. Required: 6`);
+                    throw new Error('Invalid number of Bloom\'s levels');
+                }
+
+                // Validate total questions
+                const totalQuestions = Object.values(questionsByLevel).reduce((sum, questions) => sum + questions.length, 0);
+                if (totalQuestions < 10) {
+                    console.log(`Insufficient number of questions: ${totalQuestions}. Required: 10`);
+                    throw new Error('Insufficient number of questions');
+                }
+
+                // Ensure exactly 10 questions distributed across levels
+                let finalQuestions = [];
+                for (let level = 1; level <= 6; level++) {
+                    const levelQuestions = questionsByLevel[level] || [];
+                    // For levels 1-4, take 2 questions each
+                    // For levels 5-6, take 1 question each
+                    const questionsToTake = level <= 4 ? 2 : 1;
+                    const selectedQuestions = levelQuestions
+                        .slice(0, questionsToTake)
+                        .map(q => ({
+                            ...q,
+                            bloomLevel: level
+                        }));
+                    finalQuestions = [...finalQuestions, ...selectedQuestions];
+                }
+
+                // Structure the levels with validated questions
+                chapter.levels = Array.from({ length: 6 }, (_, i) => ({
+                    bloomLevel: i + 1,
+                    questions: finalQuestions.filter(q => q.bloomLevel === i + 1)
                 }));
 
                 console.log(`✅ Chapter "${chapter.title}" content generated successfully`);
@@ -2220,12 +2242,10 @@ class ModuleService {
             } catch (error) {
                 console.error(`Error generating content for chapter "${chapter.title}" (Attempt ${attempt + 1}):`, error);
 
-                // If we've reached max retries, throw the error
                 if (attempt === maxRetries - 1) {
                     throw new Error(`Failed to generate content for chapter "${chapter.title}" after ${maxRetries} attempts: ${error.message}`);
                 }
 
-                // Wait before retrying (exponential backoff)
                 const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
                 console.log(`Waiting ${delay}ms before retrying...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
@@ -2235,28 +2255,23 @@ class ModuleService {
         }
     }
 
-    async createModuleWithContent(pdfPath, userId, title, description, preferredLanguage, pdfUrl) {
+    async createModuleWithContent(pdfPath, userId, additionalNotes, preferredLanguage, pdfUrl, existingModuleId) {
         try {
-            console.log('\n=== Starting Module Creation with Content Generation ===');
+            console.log('\n=== Starting Module Content Generation ===');
+            console.log('Existing Module ID:', existingModuleId);
 
-            // 1. Verify the PDF file exists and is not empty
-            const stats = await fs.stat(pdfPath);
-            if (stats.size === 0) {
-                throw new AppError('PDF file is empty', 400);
-            }
-
-            // 2. Read the file
+            // 1. Read and validate PDF file
             const fileBuffer = await fs.readFile(pdfPath);
             const base64Data = fileBuffer.toString('base64');
 
-            // 3. Generate initial metadata and chapter structure
+            // 2. Generate metadata and chapter structure in parallel
             console.log('Generating initial metadata and chapter structure...');
             const [metadataResult, chapterResult] = await Promise.all([
                 this.model.generateContent({
                     contents: [{
                         role: 'user',
                         parts: [{
-                            text: `Language: ${preferredLanguage}\n${MODULE_METADATA_PROMPT}`
+                            text: `Language: ${preferredLanguage}\n${additionalNotes ? `Additional Context: ${additionalNotes}\n` : ''}${MODULE_METADATA_PROMPT}`
                         }, {
                             inlineData: {
                                 mimeType: "application/pdf",
@@ -2269,7 +2284,7 @@ class ModuleService {
                     contents: [{
                         role: 'user',
                         parts: [{
-                            text: `Language: ${preferredLanguage}\n${CHAPTER_IDENTIFICATION_PROMPT}`
+                            text: `Language: ${preferredLanguage}\n${additionalNotes ? `Additional Context: ${additionalNotes}\n` : ''}${CHAPTER_IDENTIFICATION_PROMPT}`
                         }, {
                             inlineData: {
                                 mimeType: "application/pdf",
@@ -2280,64 +2295,83 @@ class ModuleService {
                 })
             ]);
 
-            // 4. Process initial responses
+            // 3. Process responses
             const metadata = processAIResponse(metadataResult.response.text(), 'metadata');
             const chapters = processAIResponse(chapterResult.response.text(), 'chapters');
 
-            // 5. Create initial module structure
-            const moduleData = {
-                title: title || metadata.title,
-                description: description || metadata.description,
-                excerpt: chapters[0]?.excerpt || metadata.excerpt,
-                createdBy: userId,
-                pdfUrl: pdfUrl,
-                chapters: chapters.map(chapter => ({
-                    title: chapter.title,
-                    order: chapter.order,
-                    excerpt: chapter.excerpt,
-                    summaries: [],
-                    levels: []
-                })),
-                subscribedUsers: [userId]
-            };
+            // 4. Prepare chapter data
+            const chapterData = chapters.map(chapter => ({
+                title: chapter.title,
+                order: chapter.order,
+                excerpt: chapter.excerpt,
+                summaries: [],
+                levels: []
+            }));
 
-            // 6. Create initial module in database
-            console.log('Creating initial module structure...');
-            const createdModule = await ModuleMaster.create(moduleData);
-
-            // 7. Generate content for each chapter with progressive saving
-            console.log(`\nGenerating content for ${chapters.length} chapters...`);
-            for (let i = 0; i < createdModule.chapters.length; i++) {
-                const chapter = createdModule.chapters[i];
-                await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
-
-                // Save progress after each successful chapter generation
-                await ModuleMaster.updateOne(
-                    {
-                        _id: createdModule._id,
-                        'chapters._id': chapter._id
-                    },
-                    {
-                        $set: {
-                            'chapters.$.summaries': chapter.summaries,
-                            'chapters.$.levels': chapter.levels
-                        }
+            // 5. Update existing module with metadata from AI
+            const updatedModule = await ModuleMaster.findByIdAndUpdate(
+                existingModuleId,
+                {
+                    $set: {
+                        title: metadata.title,
+                        description: metadata.description,
+                        excerpt: chapters[0]?.excerpt || metadata.excerpt,
+                        chapters: chapterData,
+                        status: 'completed'
                     }
-                );
+                },
+                { new: true }
+            );
+
+            if (!updatedModule) {
+                throw new AppError('Failed to update module', 500);
             }
 
-            // 8. Fetch and return the complete module
-            const completedModule = await ModuleMaster.findById(createdModule._id);
+            // Rest of the method remains the same...
+            console.log(`\nGenerating content for ${chapters.length} chapters...`);
+            for (let i = 0; i < updatedModule.chapters.length; i++) {
+                const chapter = updatedModule.chapters[i];
 
-            console.log('=== Module Creation Complete ===');
-            return completedModule;
+                try {
+                    await this.generateChapterContentWithRetry(chapter, base64Data, preferredLanguage);
+
+                    await ModuleMaster.updateOne(
+                        { _id: updatedModule._id, 'chapters._id': chapter._id },
+                        {
+                            $set: {
+                                'chapters.$.summaries': chapter.summaries,
+                                'chapters.$.levels': chapter.levels
+                            }
+                        }
+                    );
+
+                } catch (error) {
+                    console.error(`Error generating content for chapter ${i + 1}:`, error);
+                    throw error;
+                } finally {
+                    if (i === 0) {
+                        console.log('\nCreating initial module instance after first chapter...');
+                        try {
+                            const currentModule = await ModuleMaster.findById(updatedModule._id);
+                            if (currentModule.chapters[0].summaries.length > 0 && currentModule.chapters[0].levels.length > 0) {
+                                await this.startModuleInstance(updatedModule._id, userId);
+                                console.log('✅ Initial instance created successfully');
+                            } else {
+                                console.log('⚠️ Skipping instance creation: First chapter content not fully generated');
+                            }
+                        } catch (instanceError) {
+                            console.error('Error creating initial instance:', instanceError);
+                        }
+                    }
+                }
+            }
+
+            return await ModuleMaster.findById(updatedModule._id);
 
         } catch (error) {
-            // Don't clean up the file here, let the controller handle it
             console.error('Error in createModuleWithContent:', error);
             throw new AppError(`Failed to create module with content: ${error.message}`, error.statusCode || 500);
         }
     }
 }
-
 module.exports = new ModuleService();

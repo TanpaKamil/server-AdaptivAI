@@ -4,6 +4,7 @@ const { cleanupFile } = require('../utils/fileUtils');
 const { AppError } = require('../middlewares/errorHandler');
 const { ModuleMaster } = require('../models/ModuleMaster');
 const { ModuleInstance } = require('../models/ModuleInstance');
+const { User } = require('../models/User');
 const mongoose = require('mongoose');
 const fs = require('fs').promises;
 const path = require('path');
@@ -28,75 +29,78 @@ class ModuleController {
     }
   }
 
-  // Create a new module
   async createModule(req, res) {
-    const { title, description, preferredLanguage = 'id' } = req.body;
+    const { additionalNotes, preferredLanguage = 'id' } = req.body;
     let cloudinaryResult = null;
     let localFilePath = null;
 
-    // Validate request
-    if (!req.file) {
-      throw new AppError('Please upload a PDF file', 400);
-    }
-
-    localFilePath = path.resolve(req.file.path); // Get absolute path
-
-    // Verify file exists before proceeding
     try {
+      // 1. Initial validations
+      if (!req.file) {
+        throw new AppError('Please upload a PDF file', 400);
+      }
+
+      localFilePath = path.resolve(req.file.path);
+
+      // 2. Quick validations
       const stats = await fs.stat(localFilePath);
       if (stats.size === 0) {
         throw new AppError('Uploaded file is empty', 400);
       }
-    } catch (error) {
-      if (error.code === 'ENOENT') {
-        throw new AppError('Upload failed: File not found. Please try again.', 400);
-      }
-      throw error;
-    }
 
-    if (!req.file.mimetype || req.file.mimetype !== 'application/pdf') {
-      await cleanupFile(localFilePath);
-      throw new AppError('Invalid file type. Please upload a PDF file', 400);
-    }
-
-    try {
-      // Upload to Cloudinary first
-      try {
-        cloudinaryResult = await uploadToCloudinary(localFilePath);
-        if (!cloudinaryResult || !cloudinaryResult.secure_url) {
-          throw new AppError('Failed to upload file to storage', 500);
-        }
-      } catch (cloudinaryError) {
-        console.error('Cloudinary upload error:', cloudinaryError);
-        throw new AppError('Failed to upload file: ' + cloudinaryError.message, 500);
+      if (!req.file.mimetype || req.file.mimetype !== 'application/pdf') {
+        throw new AppError('Invalid file type. Please upload a PDF file', 400);
       }
 
-      // Create module with auto-generated content
+      // 3. Upload to Cloudinary
+      cloudinaryResult = await uploadToCloudinary(localFilePath);
+      if (!cloudinaryResult || !cloudinaryResult.secure_url) {
+        throw new AppError('Failed to upload file to storage', 500);
+      }
+
+      // 4. Create initial module with minimal data but with a unique constraint
       const userId = req.user.id;
-      const module = await moduleService.createModuleWithContent(
-        localFilePath,
-        userId,
-        title,
-        description,
-        preferredLanguage,
-        cloudinaryResult.secure_url
-      );
+      const uniqueIdentifier = `${userId}_${Date.now()}`;
 
-      // Only clean up the local file after everything is done
-      await cleanupFile(localFilePath);
-
-      res.status(201).json({
-        status: 'success',
-        data: { module }
+      const initialModule = await ModuleMaster.create({
+        title: 'Processing...',
+        description: 'Module is being processed...',
+        excerpt: 'Module content is being generated...',
+        createdBy: userId,
+        pdfUrl: cloudinaryResult.secure_url,
+        status: 'processing',
+        subscribedUsers: [userId],
+        chapters: [],
+        uniqueIdentifier
       });
 
+      // 5. Return early with initial module data
+      res.status(201).json({
+        status: 'success',
+        message: 'Module creation started',
+        data: {
+          moduleId: initialModule._id,
+          status: 'processing'
+        }
+      });
+
+      // 6. Continue processing in background
+      await this.processModuleInBackground(
+        initialModule._id,
+        localFilePath,
+        userId,
+        additionalNotes, // Pass additionalNotes instead of title/description
+        preferredLanguage,
+        cloudinaryResult.secure_url,
+        initialModule._id
+      );
+
     } catch (error) {
-      // If anything fails, clean up both local file and Cloudinary
+      // Clean up on error
       try {
         if (localFilePath) {
           await cleanupFile(localFilePath);
         }
-
         if (cloudinaryResult?.public_id) {
           await cloudinary.uploader.destroy(cloudinaryResult.public_id, { resource_type: 'raw' });
         }
@@ -110,6 +114,52 @@ class ModuleController {
       );
     }
   }
+
+  async processModuleInBackground(
+    moduleId,
+    pdfPath,
+    userId,
+    additionalNotes,
+    preferredLanguage,
+    pdfUrl
+) {
+    try {
+        // Generate module content, passing the existing module ID
+        const moduleContent = await moduleService.createModuleWithContent(
+            pdfPath,
+            userId,
+            additionalNotes,  // Pass additionalNotes instead of title/description
+            preferredLanguage,
+            pdfUrl,
+            moduleId  // Pass the existing module ID
+        );
+
+        // Clean up the temporary file
+        await cleanupFile(pdfPath);
+
+    } catch (error) {
+        console.error('Error in background processing:', error);
+
+        // Update module status to error, only if it's still in processing state
+        await ModuleMaster.findOneAndUpdate(
+            { _id: moduleId, status: 'processing' },
+            {
+                $set: {
+                    status: 'error',
+                    errorMessage: error.message
+                }
+            }
+        );
+
+        // Clean up
+        try {
+            await cleanupFile(pdfPath);
+        } catch (cleanupError) {
+            console.error('Cleanup error:', cleanupError);
+        }
+    }
+}
+
   // Get all modules with basic info
   async getAllModules(req, res) {
     const modules = await ModuleMaster.find()
@@ -393,7 +443,7 @@ class ModuleController {
   async getFeaturedPublicModules(req, res) {
     try {
       const featuredModules = await ModuleMaster.find({ isActive: true })
-        .limit(3)
+        .limit(4)
         .select('title excerpt createdBy subscribedUsers')
         .populate('createdBy', 'username')
         .sort({ 'subscribedUsers': -1, 'createdAt': -1 });
@@ -462,23 +512,39 @@ class ModuleController {
       // Get total count for pagination
       const totalModules = await ModuleMaster.countDocuments(searchQuery);
 
+      // Debug: Log the query being used
+      console.log('Search Query:', searchQuery);
+
       const modules = await ModuleMaster.find(searchQuery)
-        .select('title description excerpt createdBy subscribedUsers createdAt metadata')
-        .populate('createdBy', 'username')
+        .select('title description excerpt createdBy subscribedUsers createdAt')
+        .populate({
+          path: 'createdBy',
+          select: 'username'
+        })
         .sort('-createdAt')
         .skip((page - 1) * limit)
         .limit(limit);
 
-      const transformedModules = modules.map(module => ({
-        _id: module._id,
-        title: module.title,
-        description: module.description,
-        excerpt: module.excerpt,
-        createdBy: module.createdBy,
-        totalSubscribers: module.subscribedUsers?.length || 0,
-        createdAt: module.createdAt,
-        metadata: module.metadata
-      }));
+      // Debug: Log raw modules data
+      console.log('Raw Modules Data:', JSON.stringify(modules, null, 2));
+
+      const transformedModules = modules.map(module => {
+        // Debug: Log each module before transformation
+        console.log('Module before transform:', module);
+
+        return {
+          _id: module._id,
+          title: module.title,
+          description: module.description,
+          excerpt: module.excerpt,
+          createdBy: module.createdBy?.username || 'Unknown User',
+          totalSubscribers: module.subscribedUsers?.length || 0,
+          createdAt: module.createdAt
+        };
+      });
+
+      // Debug: Log transformed modules
+      console.log('Transformed Modules:', JSON.stringify(transformedModules, null, 2));
 
       res.status(200).json({
         status: 'success',
@@ -492,6 +558,7 @@ class ModuleController {
         }
       });
     } catch (error) {
+      console.error('Error in getAllPublicModules:', error);
       throw new AppError('Failed to retrieve public modules', 500);
     }
   }
@@ -929,57 +996,98 @@ class ModuleController {
     const { page = 1, limit = 10, bloomLevel } = req.query;
 
     try {
-      const instance = await ModuleInstance.findOne({
-        _id: instanceId,
-        userId: req.user.id
-      })
-        .populate({
-          path: 'moduleMasterId',
-          populate: {
-            path: 'chapters',
-            match: { _id: chapterId },
-            select: 'levels title' // Added title
-          }
+        const instance = await ModuleInstance.findOne({
+            _id: instanceId,
+            userId: req.user.id
+        })
+            .populate({
+                path: 'moduleMasterId',
+                populate: {
+                    path: 'chapters',
+                    match: { _id: chapterId },
+                    select: 'levels title'
+                }
+            });
+
+        await this.verifyInstanceOwnership(instance, req.user.id);
+        
+        if (!instance) {
+            throw new AppError('Module instance not found', 404);
+        }
+
+        if (!instance.moduleMasterId?.chapters?.length) {
+            throw new AppError('Chapter not found', 404);
+        }
+
+        const chapter = instance.moduleMasterId.chapters[0];
+
+        // Filter levels by bloomLevel if provided
+        let filteredLevels = chapter.levels;
+        if (bloomLevel) {
+            filteredLevels = chapter.levels.filter(l => l.bloomLevel === parseInt(bloomLevel));
+        }
+
+        // Calculate total questions across all filtered levels
+        const totalQuestions = filteredLevels.reduce((sum, level) => 
+            sum + level.questions.length, 0
+        );
+
+        // Calculate total levels
+        const totalLevels = chapter.levels.length;
+
+        // Paginate questions
+        const startIndex = (parseInt(page) - 1) * parseInt(limit);
+        const endIndex = startIndex + parseInt(limit);
+
+        // Flatten questions from all levels and paginate
+        const allQuestions = filteredLevels.reduce((acc, level) => {
+            return acc.concat(level.questions.map(q => ({
+                ...q.toObject(),
+                bloomLevel: level.bloomLevel
+            })));
+        }, []);
+
+        const paginatedQuestions = allQuestions.slice(startIndex, endIndex);
+
+        // Group paginated questions by level
+        const paginatedLevels = paginatedQuestions.reduce((acc, question) => {
+            const levelIndex = acc.findIndex(l => l.bloomLevel === question.bloomLevel);
+            if (levelIndex === -1) {
+                acc.push({
+                    bloomLevel: question.bloomLevel,
+                    questions: [question]
+                });
+            } else {
+                acc[levelIndex].questions.push(question);
+            }
+            return acc;
+        }, []);
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                instanceId: instanceId,
+                chapterId: chapterId,
+                chapterTitle: chapter.title,
+                levels: paginatedLevels,
+                pagination: {
+                    currentPage: parseInt(page),
+                    totalPages: Math.ceil(totalQuestions / limit),
+                    totalQuestions,
+                    questionsPerPage: parseInt(limit),
+                    totalLevels
+                },
+                filters: {
+                    bloomLevel: bloomLevel ? parseInt(bloomLevel) : null,
+                    availableBloomLevels: [...new Set(chapter.levels.map(l => l.bloomLevel))]
+                }
+            }
         });
 
-      await this.verifyInstanceOwnership(instance, req.user.id)
-      if (!instance) {
-        throw new AppError('Module instance not found', 404);
-      }
-
-      if (!instance.moduleMasterId?.chapters?.length) {
-        throw new AppError('Chapter not found', 404);
-      }
-
-      const chapter = instance.moduleMasterId.chapters[0];
-
-      // Rest of the code remains same until response...
-
-      res.status(200).json({
-        status: 'success',
-        data: {
-          instanceId: instanceId,     // Added
-          chapterId: chapterId,       // Added
-          chapterTitle: chapter.title, // Added chapter title
-          levels: paginatedLevels,
-          pagination: {
-            currentPage: parseInt(page),
-            totalPages: Math.ceil(totalQuestions / limit),
-            totalQuestions,
-            questionsPerPage: parseInt(limit),
-            totalLevels
-          },
-          filters: {
-            bloomLevel: bloomLevel ? parseInt(bloomLevel) : null,
-            availableBloomLevels: [...new Set(chapter.levels.map(l => l.bloomLevel))]
-          }
-        }
-      });
-
     } catch (error) {
-      throw new AppError(error.message, error.statusCode || 500);
+        throw new AppError(error.message, error.statusCode || 500);
     }
-  }
+}
 
   async getFeedbacks(req, res) {
     const { instanceId, chapterId } = req.params;
@@ -1240,6 +1348,27 @@ class ModuleController {
     } catch (error) {
       throw new AppError(error.message, error.statusCode || 500);
     }
+  }
+  async getModuleStatus(req, res) {
+    const { moduleId } = req.params;
+
+    const module = await ModuleMaster.findById(moduleId)
+      .select('status title description errorMessage');
+
+    if (!module) {
+      throw new AppError('Module not found', 404);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        moduleId: module._id,
+        status: module.status,
+        title: module.title,
+        description: module.description,
+        errorMessage: module.errorMessage
+      }
+    });
   }
 }
 

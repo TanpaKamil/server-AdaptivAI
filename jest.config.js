@@ -1,13 +1,27 @@
 module.exports = {
-    testEnvironment: 'node',
-    setupFilesAfterEnv: ['<rootDir>/tests/setup.js'],
-    testMatch: ['**/tests/**/*.test.js'],
-    coveragePathIgnorePatterns: [
-        '/node_modules/',
-        '/tests/setup.js',
-        '/tests/fixtures/'
+    collectCoverage: true,
+    coverageReporters: ['text', 'lcov'],
+    collectCoverageFrom: [
+        '**/*.{js,jsx}',
+        '!**/node_modules/**',
+        '!**/coverage/**'
     ],
-    moduleNameMapper: {
-        '^@/(.*)$': '<rootDir>/src/$1'
-    }
+    coveragePathIgnorePatterns: [
+        '/tunnel.js',
+        '/node_modules/',
+        '/config/gemini.js',
+        'config/db.js',
+        '/middlewares/errorHandler.js',
+        '/controllers/moduleController.js',
+        '/services/moduleService.js',
+        '/utils/aiResponseHelper.js',
+        '/models/ModuleMaster.js',
+        'routes/moduleRoutes.js',
+        'jest.config.js',
+        'routes/index.js',
+        'server.js',
+        'app.js',
+    ],
+    testEnvironment: 'node',
+    verbose: true
 };

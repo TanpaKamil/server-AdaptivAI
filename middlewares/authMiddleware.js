@@ -17,10 +17,20 @@ const authenticate = async (req, res, next) => {
             throw new AppError('Invalid token', 401);
         }
 
-        req.user = decoded;
+        // Make sure decoded contains id
+        if (!decoded.id) {
+            throw new AppError('Invalid token payload', 401);
+        }
+
+        // Set user data in request
+        req.user = {
+            id: decoded.id,
+            username: decoded.username
+        };
+
         next();
     } catch (error) {
-        next(new AppError(error.message, 401));
+        next(new AppError(error.message || 'Authentication failed', 401));
     }
 };
 

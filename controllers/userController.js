@@ -2,7 +2,8 @@ const userService = require('../services/userService');
 const authHelper = require('../utils/authHelper');
 const { uploadToCloudinary, cloudinary } = require('../config/cloudinary');
 const { cleanupFile } = require('../utils/fileUtils');
-const { asyncHandler } = require('../middlewares/errorHandler');
+const { asyncHandler, AppError } = require('../middlewares/errorHandler');
+const User = require('../models/User');
 
 class UserController {
     // Create a new user
@@ -17,26 +18,28 @@ class UserController {
     }
 
     // Login user
-    async login(req, res) {
-        const { email, password } = req.body;
+    async login(req, res, next) {
+        try {
+            const { email, password } = req.body;
 
-        const user = await userService.getUserByEmail(email); // Assuming you add this method to userService
-        if (!user) {
-            throw new AppError('Invalid email or password', 401);
+            const user = await userService.getUserByEmail(email);
+            if (!user) {
+                throw new AppError('User not found', 404);
+            }
+
+            const match = await authHelper.comparePassword(password, user.password);
+            if (!match) {
+                throw new AppError('Invalid password', 401);
+            }
+
+            const token = authHelper.generateToken({ id: user._id, username: user.username });
+            res.status(200).json({
+                status: 'success',
+                data: { token }
+            });
+        } catch (error) {
+            next(error);
         }
-
-        const match = await authHelper.comparePassword(password, user.password);
-        if (!match) {
-            throw new AppError('Invalid email or password', 401);
-        }
-
-        // Generate JWT
-        const token = authHelper.generateToken({ id: user._id, username: user.username });
-
-        res.status(200).json({
-            status: 'success',
-            data: { token }
-        });
     }
 
     // Get user by ID
@@ -125,21 +128,59 @@ class UserController {
                     throw new AppError('Email already exists', 400);
                 }
             }
+
             throw new AppError(error.message, error.statusCode || 500);
         }
     }
 
-    async register(req, res) {
-        const userData = req.body;
-        userData.password = await authHelper.hashPassword(userData.password); // Hash password
-        await userService.createUser(userData);
-        res.status(201).json({
-            status: 'success',
-            message: 'Registration successful'
-        });
+    async register(req, res, next) {
+        try {
+            const userData = req.body;
+
+            if (!userData.password || userData.password.length < 6) {
+                throw new AppError('Password must be at least 6 characters', 400);
+            }
+
+            userData.password = await authHelper.hashPassword(userData.password);
+            await userService.createUser(userData);
+
+            res.status(201).json({
+                status: 'success',
+                message: 'Registration successful'
+            });
+        } catch (error) {
+            next(error);
+        }
     }
 
+    async getProfile(req, res) {
+        try {
+            // Get user ID from authenticated request
+            const userId = req.user.id;
 
+            // Get complete user data
+            const user = await userService.getUserById(userId);
+
+            // Transform response
+            const userProfile = {
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                role: user.role,
+                imageUrl: user.imageUrl,
+                modules: user.modules,
+                lastActive: user.lastActive
+            };
+
+            res.status(200).json({
+                status: 'success',
+                data: { user: userProfile }
+            });
+        } catch (error) {
+            console.error('Error in getProfile:', error);
+            throw new AppError(error.message || 'Failed to get user profile', error.statusCode || 500);
+        }
+    }
     // Add more methods as needed (e.g., deleteUser, changePassword)
 }
 

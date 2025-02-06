@@ -17,8 +17,11 @@ const userSchema = new mongoose.Schema({
     },
     password: {
         type: String,
-        required: true,
-        minlength: 6
+        required: function () {
+            // Password hanya required saat membuat user baru
+            return this.isNew;
+        },
+        minlength: [6, 'Password must be at least 6 characters']
     },
     role: {
         type: String,

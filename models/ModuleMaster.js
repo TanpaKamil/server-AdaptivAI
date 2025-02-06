@@ -235,6 +235,7 @@ const ModuleMasterSchema = new mongoose.Schema({
     },
     createdBy: {
         type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
         required: true,
         index: true
     },
@@ -260,6 +261,25 @@ const ModuleMasterSchema = new mongoose.Schema({
     subscriberCount: {
         type: Number,
         default: 0
+    },
+    status: {
+        type: String,
+        enum: ['processing', 'completed', 'error'],
+        default: 'processing'
+    },
+    errorMessage: {
+        type: String,
+        default: null
+    },
+    processingError: {
+        type: String,
+        default: null
+    },
+    uniqueIdentifier: {
+        type: String,
+        required: true,
+        unique: true,
+        index: true
     }
 }, {
     timestamps: true,
@@ -283,6 +303,8 @@ ModuleMasterSchema.pre('save', function (next) {
 
 // Index for efficient sorting by popularity
 ModuleMasterSchema.index({ subscriberCount: -1 });
+
+ModuleMasterSchema.index({ createdBy: 1, uniqueIdentifier: 1 }, { unique: true });
 
 // Helper methods for managing subscribers
 ModuleMasterSchema.methods.addSubscriber = async function (userId) {
